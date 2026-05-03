@@ -1,0 +1,70 @@
+# =============================================================================
+# quntbot .gitignore
+# Git에 절대 올리면 안 되는 파일들
+# =============================================================================
+
+# --- 가장 중요: 비밀 정보 ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# --- 데이터 파일 (용량 크고 재생성 가능) ---
+data/*.db
+data/*.db-journal
+data/*.csv
+data/*.parquet
+data/cache/
+
+# --- 로그 ---
+logs/*.log
+logs/*.log.*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- 가상환경 ---
+venv/
+env/
+ENV/
+.venv/
+.tmp/
+.wheelhouse/
+tmp*/
+
+# --- 테스트 / 커버리지 ---
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Streamlit ---
+.streamlit/secrets.toml
