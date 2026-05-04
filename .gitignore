@@ -45,6 +45,7 @@ wheels/
 
 # --- 가상환경 ---
 venv/
+venv_broken*/
 env/
 ENV/
 .venv/
