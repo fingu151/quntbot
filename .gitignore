@@ -1,0 +1,89 @@
+# =============================================================================
+# quntbot .gitignore
+# Git에 절대 올리면 안 되는 파일들
+# =============================================================================
+
+# --- 가장 중요: 비밀 정보 ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.session
+data/kis_token*.json
+
+# --- 데이터 파일 (용량 크고 재생성 가능) ---
+data/*.db
+data/*.db.*
+data/*.db-journal
+data/*.csv
+data/*.parquet
+data/*.json
+data/*.md
+data/cache/
+!data/.gitkeep
+data/*rebalance*.json
+data/*rebalance*.md
+data/rebalance_execution_*.json
+
+# --- 로그 ---
+*.log
+logs/**
+!logs/.gitkeep
+logs/*.log
+logs/*.log.*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- 가상환경 ---
+venv/
+venv_broken*/
+env/
+ENV/
+.venv/
+.tmp/
+.wheelhouse/
+tmp*/
+
+# --- 테스트 / 커버리지 ---
+.pytest_cache/
+.pytest_tmp_dash/
+.coverage
+htmlcov/
+.tox/
+
+# --- IDE ---
+.vscode/
+.idea/
+.claude/
+.claude/settings.local.json
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Streamlit ---
+.streamlit/secrets.toml
+
+# --- Generated scratch space ---
+.tmp_design_package/
