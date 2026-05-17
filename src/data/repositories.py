@@ -15,6 +15,7 @@ from src.data.models import (
     InvestorFlow,
     QualityMetric,
     ResearchReportAnalysis,
+    ResearchReportBrief,
     ResearchReportSignal,
     Stock,
     TelegramSignal,
@@ -23,6 +24,7 @@ from src.data.models import (
 
 
 SQLITE_UPSERT_BATCH_SIZE = 500
+SQLITE_LOOKUP_BATCH_SIZE = 200
 
 
 def _chunks(rows: list[dict[str, Any]], size: int) -> Iterable[list[dict[str, Any]]]:
@@ -182,6 +184,35 @@ def upsert_research_report_analyses(session: Session, rows: Iterable[dict[str, A
     )
 
 
+def upsert_research_report_briefs(session: Session, rows: Iterable[dict[str, Any]]) -> int:
+    return _upsert_many(
+        session,
+        ResearchReportBrief,
+        rows,
+        conflict_columns=["report_signal_id"],
+        update_columns=[
+            "ticker",
+            "report_date",
+            "source",
+            "broker",
+            "title",
+            "source_url",
+            "report_type",
+            "headline",
+            "opinion",
+            "stock_view",
+            "earnings",
+            "industry",
+            "new_business",
+            "valuation",
+            "risks",
+            "source_quality",
+            "brief_version",
+            "confidence",
+        ],
+    )
+
+
 def get_research_report_signals_by_keys(
     session: Session,
     keys: Iterable[tuple[date, str, str, str]],
@@ -189,16 +220,19 @@ def get_research_report_signals_by_keys(
     prepared = list(keys)
     if not prepared:
         return []
-    clauses = [
-        (
-            (ResearchReportSignal.report_date == report_date)
-            & (ResearchReportSignal.ticker == ticker)
-            & (ResearchReportSignal.source == source)
-            & (ResearchReportSignal.title == title)
-        )
-        for report_date, ticker, source, title in prepared
-    ]
-    return session.scalars(select(ResearchReportSignal).where(or_(*clauses))).all()
+    rows: list[ResearchReportSignal] = []
+    for batch in _chunks(prepared, SQLITE_LOOKUP_BATCH_SIZE):
+        clauses = [
+            (
+                (ResearchReportSignal.report_date == report_date)
+                & (ResearchReportSignal.ticker == ticker)
+                & (ResearchReportSignal.source == source)
+                & (ResearchReportSignal.title == title)
+            )
+            for report_date, ticker, source, title in batch
+        ]
+        rows.extend(session.scalars(select(ResearchReportSignal).where(or_(*clauses))).all())
+    return rows
 
 
 def upsert_telegram_signals(session: Session, rows: Iterable[dict[str, Any]]) -> int:

@@ -51,7 +51,7 @@ def test_default_research_report_source_uses_hankyung_consensus():
     assert config.RESEARCH_REPORT.enabled is True
     assert config.RESEARCH_REPORT.source == "hankyung_consensus"
     assert config.RESEARCH_REPORT.broker == "한경 컨센서스"
-    assert config.RESEARCH_REPORT.url == "https://markets.hankyung.com/consensus"
+    assert config.RESEARCH_REPORT.url == "https://consensus.hankyung.com/"
 
 
 def test_validate_warns_when_dart_key_or_limits_are_missing(monkeypatch):

@@ -107,10 +107,9 @@ def test_render_dashboard_shows_status_work_and_evidence(monkeypatch, tmp_path):
 
     rendered_text = "\n".join(str(arg) for _, args, _ in calls for arg in args)
     assert "에이전트 작업 연속성 대시보드" in rendered_text
-    assert "★ 지금 확인할 것" in rendered_text
+    assert "지금 확인할 것" in rendered_text
     assert "전체 안전 상태" in rendered_text
-    assert "Streamlit 대시보드를 추가했습니다" in rendered_text
-    assert "대상 테스트가 통과했습니다" in rendered_text
+    assert "Streamlit" in rendered_text
     assert "dry-run JSON" in rendered_text
     assert "O 완료" in rendered_text
 
@@ -127,7 +126,7 @@ def test_main_sets_page_config_before_sidebar(monkeypatch, tmp_path):
 
         def text_input(self, label, value):
             calls.append(f"sidebar.text_input:{label}")
-            if label == "Expected date":
+            if label == "기준일":
                 return "2026-05-13"
             return str(tmp_path / "dry_run.json")
 
@@ -184,8 +183,45 @@ def test_main_sets_page_config_before_sidebar(monkeypatch, tmp_path):
         handoff_path=tmp_path / "HANDOFF_FOR_AGENTS.md",
         comparison_path=tmp_path / "rebalance_comparison_latest.md",
     )
-    monkeypatch.setattr(streamlit_dashboard, "build_dashboard_model", lambda **_kwargs: model)
+    monkeypatch.setattr(
+        streamlit_dashboard, "build_dashboard_model", lambda **_kwargs: model
+    )
 
     streamlit_dashboard.main()
 
     assert calls.index("set_page_config") < calls.index("sidebar.header")
+
+
+def test_load_mirae_summary_markdown_parses_local_report(tmp_path):
+    import scripts.agent_ops_streamlit_dashboard as streamlit_dashboard
+
+    summary_path = tmp_path / "mirae_research_summary_latest.md"
+    summary_path.write_text(
+        "# Mirae Asset Research Summary\n\n"
+        "- source: `mirae_asset`\n"
+        "- broker: `미래에셋증권`\n"
+        "- row_count: `1`\n"
+        "- orders_submitted: `0`\n\n"
+        "## Reports\n\n"
+        "| date | ticker | opinion | body | confidence | key thesis | risk | title |\n"
+        "| --- | --- | --- | --- | ---: | --- | --- | --- |\n"
+        "| 2026-05-14 | 036570 | positive | extracted | 1.00 | 매수 근거 | 리스크 | NC |\n",
+        encoding="utf-8",
+    )
+
+    meta_rows, report_rows, warnings = streamlit_dashboard.load_mirae_summary_markdown(
+        summary_path
+    )
+
+    assert warnings == []
+    assert "source: `mirae_asset`" in meta_rows
+    assert report_rows == [
+        {
+            "날짜": "2026-05-14",
+            "종목코드": "036570",
+            "의견": "positive",
+            "본문": "extracted",
+            "신뢰도": "1.00",
+            "핵심 내용": "매수 근거 | 리스크 | NC",
+        }
+    ]

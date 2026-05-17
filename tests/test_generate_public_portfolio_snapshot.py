@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import ast
+import argparse
 from datetime import datetime
+import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scripts.generate_public_portfolio_snapshot import (
     build_snapshot,
     load_json_file,
+    run,
 )
 
 
@@ -277,3 +280,45 @@ def test_snapshot_generator_does_not_import_order_execution_helpers() -> None:
 
 def test_load_json_file_returns_empty_dict_for_missing_path(tmp_path: Path) -> None:
     assert load_json_file(tmp_path / "missing.json") == {}
+
+
+def test_run_reuses_existing_snapshot_when_kis_holdings_are_unavailable(tmp_path: Path) -> None:
+    output = tmp_path / "public_snapshot.json"
+    output.write_text(
+        json.dumps(
+            {
+                "positions": [
+                    {
+                        "ticker": "005930",
+                        "name": "Samsung Electronics",
+                        "qty": 2,
+                        "avg_price": 70000,
+                        "current_price": 72000,
+                        "profit_loss": 4000,
+                        "profit_loss_rate": 2.86,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        dry_run_json=tmp_path / "missing_dry_run.json",
+        execution_report_json=None,
+        output=output,
+        database_url="sqlite:///:memory:",
+        as_of_date=None,
+        fallback_existing_snapshot=True,
+    )
+
+    exit_code = run(
+        args,
+        holdings_provider=lambda: (_ for _ in ()).throw(RuntimeError("kis blocked")),
+    )
+
+    assert exit_code == 0
+    snapshot = json.loads(output.read_text(encoding="utf-8"))
+    assert snapshot["source"]["holdings"] == "previous_public_snapshot"
+    assert snapshot["source"]["kis_called_by_snapshot"] is False
+    assert snapshot["positions"][0]["ticker"] == "005930"
+    assert "kis_holdings_unavailable_reused_previous_snapshot:RuntimeError" in snapshot["warnings"]

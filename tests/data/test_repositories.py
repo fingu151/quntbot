@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 
 from src.data.database import create_tables, get_engine, session_scope
-from src.data.models import DailyPrice, Fundamental, ResearchReportAnalysis, ResearchReportSignal, Stock
+from src.data.models import DailyPrice, Fundamental, ResearchReportAnalysis, ResearchReportBrief, ResearchReportSignal, Stock
 from src.data.repositories import (
     count_rows,
     get_latest_busanstock_signals,
@@ -17,6 +17,7 @@ from src.data.repositories import (
     upsert_fundamentals,
     upsert_investor_flows,
     upsert_research_report_analyses,
+    upsert_research_report_briefs,
     upsert_research_report_signals,
     upsert_stocks,
     upsert_telegram_signals,
@@ -100,6 +101,41 @@ def test_upsert_daily_prices_batches_large_inputs_under_sqlite_variable_limit():
 
     assert inserted == 4000
     assert count == 4000
+
+
+def test_get_research_report_signals_by_keys_batches_large_key_inputs():
+    engine = make_session()
+    rows = [
+        {
+            "report_date": date(2026, 1, 1) + timedelta(days=i % 120),
+            "ticker": f"{i % 1000:06d}",
+            "source": "hankyung_consensus",
+            "region": "domestic",
+            "broker": "Broker",
+            "rating": "Buy",
+            "rating_score": 0.6,
+            "target_price": None,
+            "previous_target_price": None,
+            "target_price_change_pct": None,
+            "sentiment_score": None,
+            "raw_score": 0.6,
+            "title": f"Report {i}",
+            "source_url": f"https://example.test/{i}.pdf",
+        }
+        for i in range(1200)
+    ]
+
+    with session_scope(engine) as session:
+        upsert_research_report_signals(session, rows)
+        signals = get_research_report_signals_by_keys(
+            session,
+            (
+                (row["report_date"], row["ticker"], row["source"], row["title"])
+                for row in rows
+            ),
+        )
+
+    assert len(signals) == 1200
 
 
 def test_upsert_fundamentals_uses_ticker_and_date_as_unique_key():
@@ -423,6 +459,69 @@ def test_upsert_research_report_analyses_saves_and_updates_by_signal_id():
     assert len(rows) == 1
     assert rows[0].summary == "업데이트된 요약"
     assert rows[0].confidence == 0.6
+
+
+def test_upsert_research_report_briefs_saves_and_updates_by_signal_id():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    signal_row = {
+        "report_date": date(2026, 5, 11),
+        "ticker": "005930",
+        "source": "hankyung_consensus",
+        "region": "domestic",
+        "broker": "Hankyung",
+        "rating": "Buy",
+        "rating_score": 0.6,
+        "target_price": 90000.0,
+        "previous_target_price": 85000.0,
+        "target_price_change_pct": 0.0588,
+        "sentiment_score": 0.2,
+        "raw_score": 0.8,
+        "title": "Samsung Electronics valuation improving",
+        "source_url": "https://example.test/report.pdf",
+    }
+
+    with session_scope(engine) as session:
+        upsert_research_report_signals(session, [signal_row])
+        signal = get_research_report_signals_by_keys(
+            session,
+            [(date(2026, 5, 11), "005930", "hankyung_consensus", signal_row["title"])],
+        )[0]
+        brief_row = {
+            "report_signal_id": signal.id,
+            "ticker": signal.ticker,
+            "report_date": signal.report_date,
+            "source": signal.source,
+            "broker": signal.broker,
+            "title": signal.title,
+            "source_url": signal.source_url,
+            "report_type": "earnings_review",
+            "headline": "AI demand improves earnings.",
+            "opinion": "positive",
+            "stock_view": "Positive view.",
+            "earnings": "Margin improves.",
+            "industry": "AI server demand.",
+            "new_business": "HBM expansion.",
+            "valuation": "Upside remains.",
+            "risks": "FX volatility.",
+            "source_quality": "full_text",
+            "brief_version": "brief-rule-v1",
+            "confidence": 0.8,
+        }
+        inserted = upsert_research_report_briefs(session, [brief_row])
+        updated = upsert_research_report_briefs(
+            session,
+            [{**brief_row, "headline": "Updated headline.", "confidence": 0.7}],
+        )
+
+    with session_scope(engine) as session:
+        rows = session.scalars(select(ResearchReportBrief)).all()
+
+    assert inserted == 1
+    assert updated == 1
+    assert len(rows) == 1
+    assert rows[0].headline == "Updated headline."
+    assert rows[0].confidence == 0.7
 
 
 def test_get_recent_research_report_scores_averages_positive_and_negative_views():

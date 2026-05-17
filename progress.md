@@ -1,5 +1,361 @@
 # quntbot Progress Log
 
+## 2026-05-14 Hankyung consensus research pipeline
+
+### Completed
+
+- Added `scripts\run_hankyung_research_readonly_pipeline.py` so Hankyung
+  consensus research can run through the same read-only flow as Mirae:
+  metadata sync, body reanalysis, summary Markdown, and factor-impact Markdown.
+- Added custom report titles for the shared summary/factor reporting scripts so
+  Hankyung outputs no longer look like Mirae outputs.
+- Fixed stored-report reanalysis so Hankyung paths such as
+  `/pdf/2026/05/...` are treated as PDF links and recorded as attempted body
+  fetches instead of `not_pdf`.
+- Corrected Hankyung's provider URL from `markets.hankyung.com/consensus` to
+  `consensus.hankyung.com`, where PDF buttons use
+  `/analysis/downpdf?report_idx=...`.
+- Added browser-style user-agent headers for list and PDF fetches because
+  Hankyung returns `Block access. 0001` to Python's default requests
+  user-agent.
+- Removed `8` obsolete rows from the earlier `markets.hankyung.com/pdf/...`
+  path after the correct `downpdf` rows were collected.
+
+### Real Collection
+
+- Command:
+  `.\venv\Scripts\python.exe scripts\run_hankyung_research_readonly_pipeline.py --start-date 2026-01-01 --end-date 2026-05-14 --as-of-date 2026-05-14 --pages 20 --limit 3000 --top-n 100`
+- The full run timed out while doing PDF extraction, so missing early-year
+  ranges were filled with monthly sync chunks:
+  - January: `515` rows, `pdf_text_extracted=515`
+  - February: `556` rows, `pdf_text_extracted=556`
+  - March 1-22: `114` rows, `pdf_text_extracted=114`
+- DB verification:
+  - `signals=2012`
+  - date range: `2026-01-02` to `2026-05-14`
+  - monthly rows: `2026-01=515`, `2026-02=556`, `2026-03=163`,
+    `2026-04=521`, `2026-05=257`
+  - `body_status=[('empty', 2), ('extracted', 2010)]`
+  - `investment_opinion=[('mixed', 49), ('negative', 2), ('positive', 1958), ('unknown', 11)]`
+- `orders_submitted=0`.
+
+### Generated Reports
+
+- `data\hankyung_research_summary_latest.md`
+  - `row_count=2012`
+  - `body_status=empty=2, extracted=2010`
+- `data\hankyung_research_factor_impact_latest.md`
+  - `factor_score_count=198`
+  - `research_signal_count=478`
+  - `impacted_count=131`
+  - top impacted tickers include `079900`, `078930`, `112610`, `460860`,
+    `483650`, `218410`.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\signals\test_reanalyze_research_report_bodies.py tests\signals\test_generate_mirae_research_summary.py tests\signals\test_run_hankyung_research_readonly_pipeline.py`
+  -> `9 passed`.
+- `.\venv\Scripts\python.exe -m py_compile ...` for the changed research
+  reader, reanalysis, summary, factor-impact, Hankyung pipeline, and tests
+  -> passed.
+- `.\venv\Scripts\python.exe -m pytest tests\signals\test_research_report_reader.py tests\signals\test_reanalyze_research_report_bodies.py tests\signals\test_generate_mirae_research_summary.py tests\factors\test_compare_research_report_factor_impact.py tests\signals\test_run_hankyung_research_readonly_pipeline.py`
+  -> `23 passed`.
+- Final Hankyung path verification:
+  - `.\venv\Scripts\python.exe -m py_compile config.py src\signals\research_report_parser.py src\signals\research_report_reader.py scripts\sync_korean_research_reports.py scripts\run_hankyung_research_readonly_pipeline.py scripts\generate_mirae_research_summary.py scripts\compare_research_report_factor_impact.py tests\signals\test_research_report_parser.py tests\signals\test_research_report_reader.py tests\signals\test_sync_korean_research_reports.py tests\signals\test_run_hankyung_research_readonly_pipeline.py`
+    -> passed.
+  - `.\venv\Scripts\python.exe -m pytest tests\signals\test_research_report_parser.py tests\signals\test_research_report_reader.py tests\signals\test_sync_korean_research_reports.py tests\signals\test_run_hankyung_research_readonly_pipeline.py tests\signals\test_generate_mirae_research_summary.py tests\factors\test_compare_research_report_factor_impact.py`
+    -> `35 passed`.
+
+## 2026-05-14 Mirae Asset 2026 YTD research expansion
+
+### Completed
+
+- Added date-range support to the Mirae research sync path:
+  - `scripts\sync_korean_research_reports.py`
+  - `src\signals\research_report_reader.py`
+- Added `--research-start-date` to
+  `scripts\compare_research_report_factor_impact.py` so factor impact can use
+  all research from `2026-01-01` instead of the default 30-day window.
+- Updated `scripts\run_mirae_research_readonly_pipeline.py` to pass the 2026
+  start date through the sync and factor-impact steps.
+- Because broad Mirae searches returned a capped recent slice, the 2026 YTD
+  collection was executed in monthly chunks.
+
+### Real Collection
+
+- January: `70` reports, `pdf_text_extracted=70`
+- February: `95` reports, `pdf_text_extracted=95`
+- March: `36` reports, `pdf_text_extracted=36`
+- April: `63` reports, `pdf_text_extracted=63`
+- May 1-14: `59` reports, `pdf_text_extracted=59`
+- DB verification:
+  - `signals=323`
+  - date range: `2026-01-05` to `2026-05-14`
+  - `body_status=[('extracted', 323)]`
+- Full reanalysis:
+  - `research_report_rows_seen=323`
+  - `pdf_text_attempted=323`
+  - `pdf_text_extracted=323`
+  - `pdf_text_length=1020335`
+  - `analysis_success_count=323`
+  - `orders_submitted=0`
+
+### Generated Reports
+
+- `data\mirae_research_summary_latest.md`
+  - `row_count=323`
+  - `investment_opinion=mixed=18, negative=6, neutral=15, positive=251, unknown=33`
+- `data\mirae_research_factor_impact_latest.md`
+  - `factor_score_count=198`
+  - `research_signal_count=115`
+  - `impacted_count=48`
+  - `research_start_date=2026-01-01`
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m py_compile ...` for changed sync, reader,
+  factor-impact, pipeline, and tests -> passed.
+- `.\venv\Scripts\python.exe -m pytest tests\signals\test_research_report_reader.py tests\signals\test_sync_korean_research_reports.py tests\factors\test_compare_research_report_factor_impact.py tests\signals\test_run_mirae_research_readonly_pipeline.py`
+  -> `21 passed`.
+- Pytest passed with exit code 0, but Windows emitted the known pytest temp
+  symlink cleanup warning after the run.
+
+## 2026-05-14 Mirae dashboard, factor impact, and read-only pipeline
+
+### Completed
+
+- Extended `scripts\agent_ops_streamlit_dashboard.py` so the Streamlit work
+  dashboard can display `data\mirae_research_summary_latest.md`.
+- Added `scripts\compare_research_report_factor_impact.py` to compare factor
+  rankings with the Mirae research overlay disabled vs enabled.
+- Added `scripts\run_mirae_research_readonly_pipeline.py` to run the Mirae
+  research flow in order:
+  - sync metadata and PDF body text
+  - reanalyze stored report bodies
+  - refresh the Mirae summary Markdown
+  - refresh the research factor-impact Markdown
+- All new research/reporting commands print `orders_submitted=0`.
+
+### Real Pipeline
+
+- Command: `.\venv\Scripts\python.exe scripts\run_mirae_research_readonly_pipeline.py --as-of-date 2026-05-14 --pages 2 --limit 30 --top-n 20`
+  - `korean_research_report_rows_stored=20`
+  - `pdf_text_attempted=20`
+  - `pdf_text_extracted=20`
+  - `pdf_text_length=43272`
+  - `body_signal_applied=4`
+  - `analysis_rows_stored=20`
+  - `analysis_success_count=20`
+  - `mirae_research_summary_rows=20`
+  - `score_count=198`
+  - `research_signal_count=16`
+  - `impacted_count=8`
+  - `pipeline_status=completed`
+  - `orders_submitted=0`
+
+### Generated Reports
+
+- `data\mirae_research_summary_latest.md`
+- `data\mirae_research_factor_impact_latest.md`
+
+### Verification
+
+- `python -m pytest tests\test_agent_ops_streamlit_dashboard.py` -> `4 passed`.
+- `python -m pytest tests\factors\test_compare_research_report_factor_impact.py` -> `3 passed`.
+- `python -m pytest tests\signals\test_run_mirae_research_readonly_pipeline.py` -> `3 passed`.
+- Sandbox Python lacked `pypdf`, so the first local pipeline smoke had
+  `pdf_text_extracted=0`. The verified run used `venv\Scripts\python.exe`,
+  where `pypdf==5.1.0` is installed.
+
+## 2026-05-14 Mirae Asset research summary report
+
+### Completed
+
+- Added `scripts\generate_mirae_research_summary.py`.
+- The script reads stored `mirae_asset` body-analysis rows and writes a
+  human-readable Markdown report.
+- Default output:
+  - `data\mirae_research_summary_latest.md`
+- Report columns:
+  - date
+  - ticker
+  - investment opinion
+  - body extraction status
+  - confidence
+  - key thesis
+  - risk
+  - title
+- The script is read-only and prints `orders_submitted=0`.
+- Updated `HANDOFF_FOR_AGENTS.md` with the report generation command.
+
+### Real Report
+
+- Command: `.\venv\Scripts\python.exe scripts\generate_mirae_research_summary.py --output data\mirae_research_summary_latest.md --limit 30`
+  - `mirae_research_summary_rows=20`
+  - `output_md=data\mirae_research_summary_latest.md`
+  - `orders_submitted=0`
+- Read-back showed:
+  - `row_count=20`
+  - `body_status=extracted=20`
+  - `investment_opinion=mixed=1, positive=15, unknown=4`
+  - Examples:
+    - `011200`: `상승하는 운임, 비용 증가 상쇄 기대`
+    - `004170`: `만점짜리 실적`
+    - `030200`: `구조적인 수익성 증가 시작`
+
+### Verification
+
+- Summary script tests: `.\venv\Scripts\python.exe -m pytest tests\signals\test_generate_mirae_research_summary.py -q` -> `2 passed`.
+- Combined research-report tests: `.\venv\Scripts\python.exe -m pytest tests\signals\test_generate_mirae_research_summary.py tests\signals\test_reanalyze_research_report_bodies.py tests\signals\test_research_report_analysis.py tests\signals\test_research_report_parser.py tests\signals\test_research_report_reader.py tests\signals\test_sync_korean_research_reports.py tests\data\test_repositories.py -q` -> `45 passed`.
+- Syntax check: `.\venv\Scripts\python.exe -m py_compile scripts\generate_mirae_research_summary.py tests\signals\test_generate_mirae_research_summary.py` -> passed.
+
+### Notes
+
+- Pytest passed with exit code 0, but Windows emitted a pytest temp symlink
+  cleanup warning after the run. It did not affect the test result.
+- Some extracted body snippets are still rough when PDF tables and paragraphs
+  are interleaved. The report makes those cases visible for the next quality
+  pass.
+
+## 2026-05-14 Mirae Asset stored report reanalysis
+
+### Completed
+
+- Added `scripts\reanalyze_research_report_bodies.py`.
+- The script reloads already stored research report rows, re-fetches each linked
+  PDF through `source_url`, reruns the current deterministic body analyzer, and
+  upserts `research_report_analyses`.
+- Defaults are scoped to Mirae Asset:
+  - `--source mirae_asset`
+  - `--broker "미래에셋증권"`
+- Added `--limit` for small batches.
+- The script prints telemetry and always prints `orders_submitted=0`.
+- Updated `HANDOFF_FOR_AGENTS.md` with the reanalysis command.
+
+### Live Smoke
+
+- Command: `.\venv\Scripts\python.exe scripts\reanalyze_research_report_bodies.py --source mirae_asset --broker "미래에셋증권"`
+  - `research_report_rows_seen=20`
+  - `pdf_text_attempted=20`
+  - `pdf_text_extracted=20`
+  - `pdf_text_length=43272`
+  - `analysis_rows_stored=20`
+  - `analysis_success_count=20`
+  - `analysis_failed_count=0`
+  - `orders_submitted=0`
+- DB spot check:
+  - `mirae_analysis=20`
+  - `status=[('extracted', 20)]`
+  - Existing rows such as `004170` now show the improved title-context summary
+    `만점짜리 실적`.
+
+### Verification
+
+- Reanalysis script tests: `.\venv\Scripts\python.exe -m pytest tests\signals\test_reanalyze_research_report_bodies.py -q` -> `2 passed`.
+- Combined research-report tests: `.\venv\Scripts\python.exe -m pytest tests\signals\test_reanalyze_research_report_bodies.py tests\signals\test_research_report_analysis.py tests\signals\test_research_report_parser.py tests\signals\test_research_report_reader.py tests\signals\test_sync_korean_research_reports.py tests\data\test_repositories.py -q` -> `43 passed`.
+- Syntax check: `.\venv\Scripts\python.exe -m py_compile scripts\reanalyze_research_report_bodies.py tests\signals\test_reanalyze_research_report_bodies.py` -> passed.
+
+### Notes
+
+- The script re-fetches PDFs because raw PDF text is intentionally not stored.
+- This remains read-only research enrichment and does not submit PAPER or LIVE
+  orders.
+
+## 2026-05-14 Mirae Asset multi-page research collection
+
+### Completed
+
+- Added `--pages` to `scripts\sync_korean_research_reports.py`.
+- Added Mirae Asset page URL expansion for
+  `https://securities.miraeasset.com/bbs/board/message/list.do?categoryId=1533`.
+- Confirmed Mirae Asset pagination requires `curPage` plus search-date/list
+  parameters; simple `startPage=2` is not enough.
+- Reused the existing parser, PDF extraction, body analysis, and DB upsert path
+  for every fetched page.
+- Fixed duplicate parsing where Mirae table rows were parsed once by the
+  provider-specific table parser and again by the generic link parser.
+- Updated `HANDOFF_FOR_AGENTS.md` with the multi-page Mirae command.
+
+### Live Smoke
+
+- Command: `.\venv\Scripts\python.exe scripts\sync_korean_research_reports.py --url https://securities.miraeasset.com/bbs/board/message/list.do?categoryId=1533 --source mirae_asset --broker "미래에셋증권" --include-pdf-text --pages 2`
+  - `korean_research_report_rows_stored=20`
+  - `pdf_text_attempted=20`
+  - `pdf_text_extracted=20`
+  - `pdf_text_length=43272`
+  - `body_signal_applied=4`
+  - `analysis_rows_stored=20`
+  - `analysis_success_count=20`
+  - `analysis_failed_count=0`
+  - `pages_requested=2`
+  - `orders_submitted=0`
+- DB spot check:
+  - `signals_mirae=20`
+  - `analysis_status=[('extracted', 20)]`
+  - examples include `011200`, `214150`, `000120`, `004170`, `036570`,
+    `043150`, `112040`.
+
+### Verification
+
+- Script/reader/parser tests: `.\venv\Scripts\python.exe -m pytest tests\signals\test_research_report_reader.py tests\signals\test_research_report_parser.py tests\signals\test_sync_korean_research_reports.py -q` -> `21 passed`.
+- Combined research-report tests: `.\venv\Scripts\python.exe -m pytest tests\signals\test_research_report_analysis.py tests\signals\test_research_report_parser.py tests\signals\test_research_report_reader.py tests\signals\test_sync_korean_research_reports.py tests\data\test_repositories.py -q` -> `41 passed`.
+- Syntax check: `.\venv\Scripts\python.exe -m py_compile src\signals\research_report_reader.py src\signals\research_report_parser.py scripts\sync_korean_research_reports.py tests\signals\test_research_report_reader.py tests\signals\test_sync_korean_research_reports.py` -> passed.
+
+### Notes
+
+- `--pages` only expands known Mirae Asset list URLs for now. Other providers
+  still fetch the original URL once.
+- This remains read-only research enrichment and prints `orders_submitted=0`.
+
+## 2026-05-14 Mirae Asset research summary quality pass
+
+### Completed
+
+- Improved deterministic `rule-v1` research-report body analysis quality for
+  Mirae Asset PDFs.
+- Added title-context fallback so sparse PDF bodies still capture concise
+  analyst rationale such as:
+  - `여전히 주목해야 할 시장 지위 확대`
+  - `원가 압박 이겨내는 중`
+  - `상승하는 운임, 비용 증가 상쇄 기대`
+- Removed ticker/rating wrappers like `(000120/매수)` from stored thesis text.
+- Reduced false thesis matches from Mirae boilerplate such as rating-definition
+  paragraphs and financial table fragments.
+- Prevented positive-title fallback text from being copied into risk buckets
+  just because it contains words like `원가`, `압박`, or `불확실성`.
+- Allowed positive `rating_score` to drive title fallback even when `raw_score`
+  is zero.
+
+### Live Smoke
+
+- Mirae command: `.\venv\Scripts\python.exe scripts\sync_korean_research_reports.py --url https://securities.miraeasset.com/bbs/board/message/list.do?categoryId=1533 --source mirae_asset --broker "미래에셋증권" --include-pdf-text`
+  - `korean_research_report_rows_stored=10`
+  - `pdf_text_attempted=10`
+  - `pdf_text_extracted=10`
+  - `pdf_text_length=12086`
+  - `body_signal_applied=1`
+  - `analysis_rows_stored=10`
+  - `analysis_success_count=10`
+  - `orders_submitted=0`
+- DB spot check showed improved current summaries:
+  - `000120`: `여전히 주목해야 할 시장 지위 확대`
+  - `145720`: `중국에서 2차 VBP만 다시 시작된다면!`
+  - `043150`: `원가 압박 이겨내는 중`
+  - `011200`: `상승하는 운임, 비용 증가 상쇄 기대`
+
+### Verification
+
+- Analyzer tests: `.\venv\Scripts\python.exe -m pytest tests\signals\test_research_report_analysis.py -q` -> `7 passed`.
+- Combined research-report tests: `.\venv\Scripts\python.exe -m pytest tests\signals\test_research_report_analysis.py tests\signals\test_research_report_reader.py tests\signals\test_research_report_parser.py tests\signals\test_sync_korean_research_reports.py tests\data\test_repositories.py -q` -> `39 passed`.
+- Syntax check: `.\venv\Scripts\python.exe -m py_compile src\signals\research_report_analysis.py tests\signals\test_research_report_analysis.py` -> passed.
+
+### Notes
+
+- Existing older Mirae analysis rows that were not present in the latest fetched
+  10-report page were not re-analyzed by the live smoke.
+- This remains read-only research enrichment. It does not submit PAPER or LIVE
+  orders.
+
 ## 2026-05-14 Agent orchestration rule optimization
 
 ### Completed

@@ -199,6 +199,40 @@ class ResearchReportAnalysis(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class ResearchReportBrief(Base):
+    __tablename__ = "research_report_briefs"
+    __table_args__ = (
+        UniqueConstraint("report_signal_id", name="uq_research_report_brief_signal"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_signal_id: Mapped[int] = mapped_column(
+        ForeignKey("research_report_signals.id"),
+        nullable=False,
+        index=True,
+    )
+    ticker: Mapped[str] = mapped_column(String(12), nullable=False, index=True)
+    report_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    broker: Mapped[str | None] = mapped_column(String(80))
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    report_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    headline: Mapped[str] = mapped_column(Text, nullable=False)
+    opinion: Mapped[str] = mapped_column(String(20), nullable=False)
+    stock_view: Mapped[str | None] = mapped_column(Text)
+    earnings: Mapped[str | None] = mapped_column(Text)
+    industry: Mapped[str | None] = mapped_column(Text)
+    new_business: Mapped[str | None] = mapped_column(Text)
+    valuation: Mapped[str | None] = mapped_column(Text)
+    risks: Mapped[str | None] = mapped_column(Text)
+    source_quality: Mapped[str] = mapped_column(String(30), nullable=False)
+    brief_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class SyncRun(Base):
     __tablename__ = "sync_runs"
 

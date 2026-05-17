@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -32,6 +33,12 @@ from typing import Any, Iterable
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SNAPSHOT_PATH = ROOT_DIR / "data" / "public_portfolio_snapshot.json"
 AUTO_REFRESH_SECONDS = 30 * 60
+DEFAULT_RESEARCH_LIMIT = 5000
+DEFAULT_VISIBLE_RESEARCH_CARDS = 100
+DEFAULT_TICKER_RESEARCH_BRIEF_PATH = ROOT_DIR / "data" / "research_report_ticker_briefs.json"
+DEFAULT_RESEARCH_QUALITY_QUEUE_PATH = ROOT_DIR / "data" / "research_quality_review_queue.json"
+DEFAULT_RESEARCH_BRIEF_QA_SAMPLE_PATH = ROOT_DIR / "data" / "research_brief_qa_sample.json"
+DEFAULT_RESEARCH_QA_ACTION_QUEUE_PATH = ROOT_DIR / "data" / "research_qa_action_queue.json"
 
 
 # ─────────────────────────── Factor metadata ────────────────────────────────
@@ -88,6 +95,1030 @@ def load_snapshot(path: Path | str) -> dict[str, Any]:
     if not isinstance(snapshot, dict):
         return {"status": "invalid", "error": "snapshot root must be a JSON object"}
     return {"status": "ok", "snapshot": snapshot}
+
+
+def load_research_report_briefs(
+    database_url: str | None = None,
+    *,
+    limit: int = DEFAULT_RESEARCH_LIMIT,
+    engine_factory=None,
+) -> dict[str, Any]:
+    """Load read-only research report analysis rows for the public dashboard."""
+    try:
+        from sqlalchemy import select
+
+        from config import DATABASE_URL
+        from src.data.database import get_engine, session_scope
+        from src.data.models import ResearchReportBrief
+
+        engine = (engine_factory or get_engine)(database_url or DATABASE_URL)
+        with session_scope(engine) as session:
+            statement = (
+                select(ResearchReportBrief)
+                .order_by(
+                    ResearchReportBrief.report_date.desc(),
+                    ResearchReportBrief.ticker.asc(),
+                )
+                .limit(max(1, int(limit)))
+            )
+            rows = list(session.scalars(statement).all())
+    except Exception as exc:
+        return {"status": "invalid", "error": str(exc), "rows": []}
+
+    dashboard_rows = [_brief_row_to_dashboard_row(row) for row in rows]
+    dashboard_rows = _enrich_sparse_research_rows(dashboard_rows)
+
+    return {
+        "status": "ok",
+        "rows": dashboard_rows,
+    }
+
+
+def load_ticker_research_briefs(
+    path: Path | str = DEFAULT_TICKER_RESEARCH_BRIEF_PATH,
+) -> dict[str, Any]:
+    artifact_path = Path(path)
+    if not artifact_path.exists():
+        return {"status": "missing", "path": str(artifact_path), "by_ticker": {}}
+    try:
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "status": "invalid",
+            "error": str(exc),
+            "path": str(artifact_path),
+            "by_ticker": {},
+        }
+    if not isinstance(artifact, dict):
+        return {
+            "status": "invalid",
+            "error": "ticker brief artifact root must be a JSON object",
+            "path": str(artifact_path),
+            "by_ticker": {},
+        }
+    ticker_rows = artifact.get("tickers") or []
+    by_ticker = {
+        str(row.get("ticker")): row
+        for row in ticker_rows
+        if isinstance(row, dict) and row.get("ticker")
+    }
+    return {"status": "ok", "artifact": artifact, "by_ticker": by_ticker, "path": str(artifact_path)}
+
+
+def load_research_quality_queue(
+    path: Path | str = DEFAULT_RESEARCH_QUALITY_QUEUE_PATH,
+) -> dict[str, Any]:
+    queue_path = Path(path)
+    if not queue_path.exists():
+        return {"status": "missing", "path": str(queue_path), "items": []}
+    try:
+        payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "invalid", "path": str(queue_path), "error": str(exc), "items": []}
+    if not isinstance(payload, dict):
+        return {
+            "status": "invalid",
+            "path": str(queue_path),
+            "error": "queue root must be a JSON object",
+            "items": [],
+        }
+    items = [item for item in payload.get("items", []) if isinstance(item, dict)]
+    action_by_ticker = {
+        str(item.get("ticker") or ""): str(item.get("primary_action") or "")
+        for item in items
+        if item.get("ticker")
+    }
+    return {
+        "status": "ok",
+        "path": str(queue_path),
+        "payload": payload,
+        "items": items,
+        "action_by_ticker": action_by_ticker,
+    }
+
+
+def load_research_brief_qa_sample(
+    path: Path | str = DEFAULT_RESEARCH_BRIEF_QA_SAMPLE_PATH,
+) -> dict[str, Any]:
+    sample_path = Path(path)
+    if not sample_path.exists():
+        return {"status": "missing", "path": str(sample_path), "items": []}
+    try:
+        payload = json.loads(sample_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "invalid", "path": str(sample_path), "error": str(exc), "items": []}
+    if not isinstance(payload, dict):
+        return {
+            "status": "invalid",
+            "path": str(sample_path),
+            "error": "QA sample root must be a JSON object",
+            "items": [],
+        }
+    items = [item for item in payload.get("items", []) if isinstance(item, dict)]
+    return {"status": "ok", "path": str(sample_path), "payload": payload, "items": items}
+
+
+def load_research_qa_action_queue(
+    path: Path | str = DEFAULT_RESEARCH_QA_ACTION_QUEUE_PATH,
+) -> dict[str, Any]:
+    queue_path = Path(path)
+    if not queue_path.exists():
+        return {"status": "missing", "path": str(queue_path), "items": []}
+    try:
+        payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "invalid", "path": str(queue_path), "error": str(exc), "items": []}
+    if not isinstance(payload, dict):
+        return {
+            "status": "invalid",
+            "path": str(queue_path),
+            "error": "QA action queue root must be a JSON object",
+            "items": [],
+        }
+    items = [item for item in payload.get("items", []) if isinstance(item, dict)]
+    return {"status": "ok", "path": str(queue_path), "payload": payload, "items": items}
+
+
+def _brief_row_to_dashboard_row(row: Any) -> dict[str, Any]:
+    return {
+        "report_date": str(row.report_date),
+        "ticker": row.ticker,
+        "source": row.source,
+        "broker": row.broker or "",
+        "title": row.title,
+        "source_url": row.source_url or "",
+        "body_text_status": row.source_quality,
+        "summary": row.headline,
+        "investment_opinion": row.opinion,
+        "buy_thesis": row.stock_view or "",
+        "sell_or_risk_thesis": row.risks or "",
+        "growth_drivers": row.industry or row.new_business or "",
+        "earnings_drivers": row.earnings or "",
+        "valuation_view": row.valuation or "",
+        "target_price_rationale": "",
+        "risk_factors": row.risks or "",
+        "evidence_terms": f"{row.report_type}, {row.source_quality}, {row.brief_version}",
+        "report_type": row.report_type,
+        "new_business": row.new_business or "",
+        "confidence": float(row.confidence or 0.0),
+    }
+
+
+_RESEARCH_FILL_FIELDS = (
+    "buy_thesis",
+    "sell_or_risk_thesis",
+    "growth_drivers",
+    "earnings_drivers",
+    "valuation_view",
+    "target_price_rationale",
+    "risk_factors",
+    "new_business",
+)
+_RESEARCH_FIELD_KEYWORDS = {
+    "buy_thesis": ("개선", "회복", "성장", "기대", "견인", "상회", "모멘텀"),
+    "sell_or_risk_thesis": ("리스크", "둔화", "부담", "우려", "하락", "변동"),
+    "growth_drivers": ("업황", "수요", "회복", "성장", "소비", "관광객", "시장", "견인"),
+    "earnings_drivers": ("실적", "매출", "영업이익", "이익", "수익성", "마진", "개선", "상회"),
+    "valuation_view": ("밸류", "밸류에이션", "목표주가", "상향", "여력", "부담"),
+    "target_price_rationale": ("목표주가", "상향", "하향", "실적", "추정치", "밸류"),
+    "risk_factors": ("리스크", "둔화", "부담", "우려", "환율", "변동", "경쟁"),
+    "new_business": ("신규", "신사업", "모멘텀", "채널", "확대", "온라인", "면세점", "투자"),
+}
+_MIN_RESEARCH_FIELD_SCORE = 6
+_SOURCE_QUALITY_RANK = {
+    "full_text": 4,
+    "partial_text": 3,
+    "title_or_sparse": 2,
+    "empty": 1,
+    "not_pdf_response": 1,
+    "not_pdf": 1,
+    "fetch_failed": 0,
+    "brief_failed": 0,
+}
+_NO_EXPLICIT_SECTION_TEXT = {
+    "stock_view": "리포트에서 명시적인 종목 관점은 확인되지 않았습니다.",
+    "growth": "리포트에서 명시적인 성장/업황 내용은 확인되지 않았습니다.",
+    "earnings": "리포트에서 명시적인 실적 내용은 확인되지 않았습니다.",
+    "risk": "리포트에서 명시적인 리스크 요인은 확인되지 않았습니다.",
+}
+
+
+def _enrich_sparse_research_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or "")
+        if ticker:
+            by_ticker.setdefault(ticker, []).append(row)
+
+    enriched_rows: list[dict[str, Any]] = []
+    for row in rows:
+        ticker = str(row.get("ticker") or "")
+        peers = by_ticker.get(ticker, [])
+        enriched = dict(row)
+        filled_fields: list[str] = []
+        for field in _RESEARCH_FILL_FIELDS:
+            current_value = _best_clean_research_field_value(enriched.get(field), field)
+            donor_value = _best_research_field_value(peers, field)
+            current_score = _research_field_value_score(field, current_value)
+            donor_score = _research_field_value_score(field, donor_value)
+            if donor_value and (not current_value or donor_score > current_score + 2):
+                enriched[field] = donor_value
+                filled_fields.append(field)
+            elif current_value:
+                enriched[field] = current_value
+        if filled_fields:
+            best_quality = max((_quality_rank(peer) for peer in peers), default=0)
+            if best_quality > _quality_rank(enriched):
+                enriched["evidence_terms"] = (
+                    f"{enriched.get('evidence_terms', '')}, "
+                    f"enriched_from:{ticker}/full_text"
+                ).strip(", ")
+        enriched_rows.append(enriched)
+    return enriched_rows
+
+
+def _best_research_field_value(rows: list[dict[str, Any]], field: str) -> str:
+    direct_min_score = 2 if field == "risk_factors" else 4
+    direct_candidates = [
+        (row, _best_clean_research_field_value(row.get(field), field, min_score=direct_min_score))
+        for row in rows
+    ]
+    direct_candidates = [(row, value) for row, value in direct_candidates if value]
+    if direct_candidates:
+        row, value = max(
+            direct_candidates,
+            key=lambda item: (
+                _research_field_value_score(field, item[1]),
+                _quality_rank(item[0]),
+                _to_float(item[0].get("confidence")),
+                str(item[0].get("report_date") or ""),
+            ),
+        )
+        return value
+
+    candidates = [
+        (row, _best_clean_research_field_value(value, field))
+        for row in rows
+        for value in _research_field_candidate_values(row, field)
+    ]
+    candidates = [(row, value) for row, value in candidates if value]
+    if not candidates:
+        return ""
+    row, value = max(
+        candidates,
+        key=lambda item: (
+            _research_field_value_score(field, item[1]),
+            _quality_rank(item[0]),
+            _to_float(item[0].get("confidence")),
+            str(item[0].get("report_date") or ""),
+        ),
+    )
+    return value
+
+
+def _research_field_candidate_values(row: dict[str, Any], field: str) -> list[object]:
+    values: list[object] = [row.get(field)]
+    if field == "buy_thesis":
+        values.extend([row.get("growth_drivers"), row.get("summary"), row.get("title")])
+    elif field == "growth_drivers":
+        values.extend([row.get("title"), row.get("summary"), row.get("buy_thesis")])
+    elif field == "earnings_drivers":
+        values.extend([row.get("summary"), row.get("buy_thesis"), row.get("title")])
+    elif field == "new_business":
+        values.extend([row.get("summary"), row.get("buy_thesis"), row.get("growth_drivers")])
+    elif field == "risk_factors":
+        values.extend([row.get("sell_or_risk_thesis")])
+    elif field in {"valuation_view", "target_price_rationale"}:
+        values.extend([row.get("summary"), row.get("buy_thesis")])
+    elif field == "sell_or_risk_thesis":
+        values.extend([row.get("risk_factors")])
+    return values
+
+
+def _best_clean_research_field_value(
+    value: object,
+    field: str,
+    *,
+    min_score: int = _MIN_RESEARCH_FIELD_SCORE,
+) -> str:
+    fragments = _clean_report_fragments(value)
+    if not fragments:
+        return ""
+    best = max(fragments, key=lambda fragment: _research_field_value_score(field, fragment))
+    if _research_field_value_score(field, best) < min_score:
+        return ""
+    return best
+
+
+def _has_displayable_report_text(value: object) -> bool:
+    return bool(_first_report_text(value))
+
+
+def _research_field_value_score(field: str, value: object) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    score = 0
+    if 18 <= len(text) <= 180:
+        score += 4
+    if text.endswith("."):
+        score += 4
+    if text.endswith(("다.", "다", "됨.", "예상된다.", "전망.", "전망된다.")):
+        score += 4
+    score += sum(2 for keyword in _RESEARCH_FIELD_KEYWORDS.get(field, ()) if keyword in text)
+    if field not in {"valuation_view", "target_price_rationale"} and any(
+        term in text for term in ("목표주가", "투자의견", "목표가")
+    ):
+        score -= 20
+    numeric_tokens = [token for token in text.split() if any(ch.isdigit() for ch in token)]
+    score -= min(8, max(0, len(numeric_tokens) - 1) * 2)
+    if text.endswith(("고", "며", "를", "을", "로", "에", "의", "신규", "수요", "부")):
+        score -= 6
+    return score
+
+
+def _quality_rank(row: dict[str, Any]) -> int:
+    return _SOURCE_QUALITY_RANK.get(str(row.get("body_text_status") or ""), 0)
+
+
+def filter_research_report_briefs(
+    rows: list[dict[str, Any]],
+    *,
+    portfolio_tickers: set[str] | None = None,
+    portfolio_only: bool = False,
+    opinion: str = "all",
+    source: str = "all",
+    query: str = "",
+) -> list[dict[str, Any]]:
+    filtered = list(rows)
+    if portfolio_only:
+        filtered = [
+            row
+            for row in filtered
+            if portfolio_tickers and str(row.get("ticker")) in portfolio_tickers
+        ]
+    if opinion != "all":
+        filtered = [row for row in filtered if row.get("investment_opinion") == opinion]
+    if source != "all":
+        filtered = [row for row in filtered if row.get("source") == source]
+    if query:
+        needle = query.strip().lower()
+        filtered = [
+            row
+            for row in filtered
+            if needle
+            and needle
+            in " ".join(
+                str(row.get(key, ""))
+                for key in (
+                    "ticker",
+                    "title",
+                    "summary",
+                    "buy_thesis",
+                    "growth_drivers",
+                    "new_business",
+                    "earnings_drivers",
+                    "risk_factors",
+                    "evidence_terms",
+                )
+            ).lower()
+        ]
+    return filtered
+
+
+def build_ticker_research_briefs(
+    rows: Iterable[dict[str, Any]],
+    *,
+    generated_at: str | None = None,
+    max_source_reports: int = 5,
+    llm_status: str = "disabled",
+) -> dict[str, Any]:
+    prepared_rows = _enrich_sparse_research_rows([dict(row) for row in rows])
+    by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for row in prepared_rows:
+        ticker = str(row.get("ticker") or "").strip()
+        if ticker:
+            by_ticker.setdefault(ticker, []).append(row)
+
+    ticker_briefs = []
+    for ticker, ticker_rows in by_ticker.items():
+        sorted_rows = sorted(ticker_rows, key=_ticker_brief_row_key, reverse=True)
+        latest = sorted_rows[0]
+        best_quality_row = max(
+            sorted_rows,
+            key=lambda row: (_quality_rank(row), _to_float(row.get("confidence"))),
+        )
+        sections = {
+            "stock_view": _best_research_field_value(sorted_rows, "buy_thesis"),
+            "industry": _best_research_field_value(sorted_rows, "growth_drivers"),
+            "growth": _best_research_field_value(sorted_rows, "growth_drivers"),
+            "earnings": _best_research_field_value(sorted_rows, "earnings_drivers"),
+            "valuation": _best_research_field_value(sorted_rows, "valuation_view"),
+            "new_business": _best_research_field_value(sorted_rows, "new_business"),
+            "risk": _best_research_field_value(sorted_rows, "risk_factors"),
+        }
+        sections = _finalize_ticker_sections(
+            sections,
+            source_quality=str(best_quality_row.get("body_text_status") or ""),
+        )
+        ticker_briefs.append(
+            {
+                "ticker": ticker,
+                "latest_report_date": str(latest.get("report_date") or ""),
+                "opinion": str(latest.get("investment_opinion") or ""),
+                "headline": str(latest.get("summary") or latest.get("title") or ""),
+                "sections": sections,
+                "quality": {
+                    "source_quality": str(best_quality_row.get("body_text_status") or ""),
+                    "confidence": round(
+                        max(_to_float(row.get("confidence")) for row in sorted_rows),
+                        4,
+                    ),
+                    "report_count": len(sorted_rows),
+                    "llm_status": llm_status,
+                },
+                "source_reports": [
+                    _ticker_source_report(row)
+                    for row in sorted_rows[: max(1, int(max_source_reports))]
+                ],
+            }
+        )
+
+    ticker_briefs.sort(key=lambda row: str(row.get("latest_report_date") or ""), reverse=True)
+    full_text_count = sum(
+        1
+        for row in prepared_rows
+        if str(row.get("body_text_status") or "") in {"full_text", "partial_text"}
+    )
+    return {
+        "schema_version": 1,
+        "brief_version": "ticker-brief-rule-v1",
+        "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "ticker_count": len(ticker_briefs),
+            "source_report_count": len(prepared_rows),
+            "body_text_available_count": full_text_count,
+        },
+        "llm": {
+            "status": llm_status,
+            "reason": "External LLM calls are opt-in and disabled by default.",
+        },
+        "tickers": ticker_briefs,
+    }
+
+
+def _finalize_ticker_sections(sections: dict[str, str], *, source_quality: str) -> dict[str, str]:
+    finalized = dict(sections)
+    if source_quality in {"full_text", "partial_text"}:
+        for section, fallback in _NO_EXPLICIT_SECTION_TEXT.items():
+            if not _first_report_text(finalized.get(section)):
+                finalized[section] = fallback
+    return finalized
+
+
+def save_ticker_research_briefs(
+    path: Path | str = DEFAULT_TICKER_RESEARCH_BRIEF_PATH,
+    *,
+    rows: Iterable[dict[str, Any]] | None = None,
+    database_url: str | None = None,
+    llm_status: str = "disabled",
+) -> dict[str, Any]:
+    if rows is None:
+        loaded = load_research_report_briefs(database_url=database_url)
+        if loaded.get("status") != "ok":
+            return {
+                "status": "invalid",
+                "error": loaded.get("error", "failed to load research report briefs"),
+                "path": str(path),
+            }
+        rows = loaded["rows"]
+
+    artifact = build_ticker_research_briefs(rows, llm_status=llm_status)
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(artifact, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {"status": "ok", "path": str(output_path), "artifact": artifact}
+
+
+def build_ticker_research_quality_report(
+    artifact: dict[str, Any],
+    *,
+    portfolio_tickers: set[str] | None = None,
+    now: datetime | None = None,
+    stale_days: int = 45,
+) -> dict[str, Any]:
+    tickers = [row for row in artifact.get("tickers", []) if isinstance(row, dict)]
+    portfolio = {str(ticker) for ticker in (portfolio_tickers or set()) if ticker}
+    by_ticker = {str(row.get("ticker")): row for row in tickers if row.get("ticker")}
+    issues: list[dict[str, Any]] = []
+    complete_count = 0
+    reference = now or datetime.now(timezone.utc)
+    required_sections = ("stock_view", "growth", "earnings", "risk")
+
+    for row in tickers:
+        sections = row.get("sections") or {}
+        quality = row.get("quality") or {}
+        missing_sections = [
+            section for section in required_sections if not _first_report_text(sections.get(section))
+        ]
+        reasons: list[str] = []
+        if missing_sections:
+            reasons.append("missing_sections")
+        report_age_days = _report_age_days(row.get("latest_report_date"), reference)
+        if report_age_days is not None and report_age_days > stale_days:
+            reasons.append("stale_report")
+        confidence = _to_float(quality.get("confidence"))
+        if confidence < 0.5:
+            reasons.append("low_confidence")
+        source_quality = str(quality.get("source_quality") or "")
+        if source_quality not in {"full_text", "partial_text"}:
+            reasons.append("weak_source_quality")
+        if not reasons:
+            complete_count += 1
+            continue
+        issues.append(
+            {
+                "ticker": str(row.get("ticker") or ""),
+                "latest_report_date": str(row.get("latest_report_date") or ""),
+                "missing_sections": missing_sections,
+                "reasons": reasons,
+                "confidence": confidence,
+                "source_quality": source_quality,
+                "report_count": int(_to_float(quality.get("report_count"))),
+                "report_age_days": report_age_days,
+            }
+        )
+
+    portfolio_missing = sorted(ticker for ticker in portfolio if ticker not in by_ticker)
+    issues.sort(
+        key=lambda item: (
+            len(item["reasons"]),
+            len(item["missing_sections"]),
+            item.get("report_age_days") or 0,
+        ),
+        reverse=True,
+    )
+    return {
+        "summary": {
+            "ticker_count": len(tickers),
+            "complete_count": complete_count,
+            "issue_count": len(issues),
+            "portfolio_missing_count": len(portfolio_missing),
+        },
+        "issues": issues,
+        "portfolio_missing": portfolio_missing,
+    }
+
+
+def _quality_dashboard_summary(
+    quality_report: dict[str, Any],
+    queue_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary = dict(quality_report.get("summary") or {})
+    issues = [item for item in quality_report.get("issues", []) if isinstance(item, dict)]
+    action_by_ticker = {}
+    if queue_result and queue_result.get("status") == "ok":
+        action_by_ticker = dict(queue_result.get("action_by_ticker") or {})
+    latest_not_found_count = sum(
+        1
+        for issue in issues
+        if action_by_ticker.get(str(issue.get("ticker") or "")) == "latest_report_not_found"
+    )
+    issue_count = int(_to_float(summary.get("issue_count")))
+    summary["latest_report_not_found_count"] = latest_not_found_count
+    summary["actionable_issue_count"] = max(0, issue_count - latest_not_found_count)
+    return summary
+
+
+def _research_operator_next_action_html(quality_summary: dict[str, Any]) -> str:
+    actionable = int(_to_float(quality_summary.get("actionable_issue_count")))
+    latest_not_found = int(_to_float(quality_summary.get("latest_report_not_found_count")))
+    portfolio_missing = int(_to_float(quality_summary.get("portfolio_missing_count")))
+    complete = int(_to_float(quality_summary.get("complete_count")))
+    if portfolio_missing:
+        title = "Portfolio research gap"
+        next_step = (
+            "Run supplemental discovery first. If a portfolio ticker still has no brief, "
+            "use the supplement template for that ticker."
+        )
+        command = (
+            "powershell.exe -ExecutionPolicy Bypass -File .\\scripts\\refresh_public_portfolio_snapshot.ps1 "
+            "-RunOnce -RunTimeoutMinutes 10 -IncludeSupplementalDiscovery"
+        )
+    elif actionable:
+        title = "Automated quality pass"
+        next_step = (
+            "Run one supplemental discovery refresh before manual review. It searches candidates, "
+            "verifies text, ingests verified rows, and rebuilds ticker briefs."
+        )
+        command = (
+            "powershell.exe -ExecutionPolicy Bypass -File .\\scripts\\refresh_public_portfolio_snapshot.ps1 "
+            "-RunOnce -RunTimeoutMinutes 10 -IncludeSupplementalDiscovery"
+        )
+    elif latest_not_found:
+        title = "Latest-report backlog tracked"
+        next_step = (
+            "No immediate manual work. These tickers are tracked separately as latest report not found; "
+            "check again after the next broad source refresh."
+        )
+        command = ".\\venv\\Scripts\\python.exe -m scripts.public_dashboard_ops --max-age-minutes 35"
+    else:
+        title = "Research queue clean"
+        next_step = "No manual research task right now. Keep the 30-minute refresh loop running."
+        command = ".\\venv\\Scripts\\python.exe -m scripts.public_dashboard_ops --max-age-minutes 35"
+    return f"""
+    <div class="research-card op-next">
+      <div class="head">
+        <div>
+          <div class="meta">Operator Next Action · 자동화 우선</div>
+          <div class="title">{html.escape(title)}</div>
+        </div>
+        <div class="pill">complete {complete}</div>
+      </div>
+      <div class="research-grid">
+        <div class="research-cell"><b>Next step</b>{html.escape(next_step)}</div>
+        <div class="research-cell"><b>Command</b><span class="mono">{html.escape(command)}</span></div>
+      </div>
+    </div>
+    """
+
+
+def build_research_qa_sample_summary(sample_result: dict[str, Any]) -> dict[str, int]:
+    items = [item for item in sample_result.get("items", []) if isinstance(item, dict)]
+    reviewed = 0
+    source_refresh = 0
+    section_rewrite = 0
+    issue_category_count = 0
+    for item in items:
+        review_status = str(item.get("review_status") or "").strip().lower()
+        if review_status and review_status not in {"pending", "todo", "not_reviewed"}:
+            reviewed += 1
+        if _truthy_review_flag(item.get("needs_source_refresh")):
+            source_refresh += 1
+        if _truthy_review_flag(item.get("needs_section_rewrite")):
+            section_rewrite += 1
+        if str(item.get("issue_category") or "").strip():
+            issue_category_count += 1
+    total = len(items)
+    return {
+        "sample_count": total,
+        "reviewed_count": reviewed,
+        "pending_count": max(0, total - reviewed),
+        "source_refresh_count": source_refresh,
+        "section_rewrite_count": section_rewrite,
+        "issue_category_count": issue_category_count,
+    }
+
+
+def _truthy_review_flag(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "needs", "needed", "필요"}
+
+
+def _research_qa_summary_html(sample_result: dict[str, Any]) -> str:
+    if sample_result.get("status") == "missing":
+        return """
+        <div class="research-card op-next">
+          <div class="head"><div><div class="meta">QA Sample</div><div class="title">QA sample missing</div></div><div class="pill">pending</div></div>
+          <div class="research-grid">
+            <div class="research-cell"><b>Next step</b>Run the public dashboard artifact refresh to export a QA sample.</div>
+          </div>
+        </div>
+        """
+    if sample_result.get("status") != "ok":
+        error = html.escape(str(sample_result.get("error") or "unknown error"))
+        return f"""
+        <div class="research-card op-next">
+          <div class="head"><div><div class="meta">QA Sample</div><div class="title">QA sample invalid</div></div><div class="pill">check</div></div>
+          <div class="research-grid">
+            <div class="research-cell"><b>Error</b>{error}</div>
+          </div>
+        </div>
+        """
+    summary = build_research_qa_sample_summary(sample_result)
+    if summary["sample_count"] == 0:
+        title = "QA sample empty"
+        next_step = "Run the public dashboard artifact refresh to export fresh QA samples."
+    elif summary["pending_count"]:
+        title = "QA review pending"
+        next_step = "Review sampled briefs first; mark review_status and needs_* fields so trust metrics can improve."
+    else:
+        title = "QA sample reviewed"
+        next_step = "No pending QA sample rows. Continue monitoring source refresh and section rewrite counts."
+    return f"""
+    <div class="research-card op-next">
+      <div class="head">
+        <div>
+          <div class="meta">QA Sample Trust · 수동 검토 연결</div>
+          <div class="title">{html.escape(title)}</div>
+        </div>
+        <div class="pill">pending {summary['pending_count']}</div>
+      </div>
+      <div class="research-grid">
+        <div class="research-cell"><b>Reviewed</b>{summary['reviewed_count']} / {summary['sample_count']}</div>
+        <div class="research-cell"><b>Source refresh</b>{summary['source_refresh_count']}</div>
+        <div class="research-cell"><b>Section rewrite</b>{summary['section_rewrite_count']}</div>
+        <div class="research-cell"><b>Next step</b>{html.escape(next_step)}</div>
+      </div>
+    </div>
+    """
+
+
+def build_research_qa_action_summary(queue_result: dict[str, Any]) -> dict[str, int]:
+    items = [item for item in queue_result.get("items", []) if isinstance(item, dict)]
+    section_rewrite = 0
+    source_refresh = 0
+    for item in items:
+        actions = {str(action) for action in item.get("actions", [])}
+        if "section_rewrite" in actions:
+            section_rewrite += 1
+        if "source_refresh" in actions:
+            source_refresh += 1
+    payload_summary = queue_result.get("payload", {}).get("summary", {})
+    sample_count = int(payload_summary.get("sample_count") or 0)
+    attempted_no_new_source = int(
+        payload_summary.get("source_refresh_attempted_no_new_source_count") or 0
+    )
+    return {
+        "sample_count": sample_count,
+        "action_item_count": len(items),
+        "section_rewrite_count": section_rewrite,
+        "source_refresh_count": source_refresh,
+        "source_refresh_attempted_no_new_source_count": attempted_no_new_source,
+    }
+
+
+def _research_qa_action_queue_html(queue_result: dict[str, Any]) -> str:
+    if queue_result.get("status") == "missing":
+        return """
+        <div class="research-card op-next">
+          <div class="head"><div><div class="meta">해야 할 작업</div><div class="title">작업 큐 파일이 없습니다</div></div><div class="pill">대기</div></div>
+          <div class="research-grid">
+            <div class="research-cell"><b>다음 작업</b>공개 대시보드 갱신을 실행해서 자동 QA 작업 큐를 먼저 생성하세요.</div>
+          </div>
+        </div>
+        """
+    if queue_result.get("status") != "ok":
+        error = html.escape(str(queue_result.get("error") or "unknown error"))
+        return f"""
+        <div class="research-card op-next">
+          <div class="head"><div><div class="meta">해야 할 작업</div><div class="title">작업 큐 파일을 읽지 못했습니다</div></div><div class="pill">확인 필요</div></div>
+          <div class="research-grid">
+            <div class="research-cell"><b>오류</b>{error}</div>
+          </div>
+        </div>
+        """
+    summary = build_research_qa_action_summary(queue_result)
+    items = [item for item in queue_result.get("items", []) if isinstance(item, dict)]
+    if summary["action_item_count"]:
+        title = "자동 QA 작업이 준비됐습니다"
+        next_step = "수동 검토 전에 소스 보강 또는 섹션 재작성 작업부터 처리하세요."
+    else:
+        title = "지금 처리할 자동 QA 작업이 없습니다"
+        if summary["source_refresh_attempted_no_new_source_count"]:
+            next_step = (
+                "소스 탐색 완료 후 신규 공개 소스가 없는 항목은 작업 큐에서 제외했습니다. "
+                "30분 갱신 루프를 유지하면 새 QA 플래그가 생길 때 이 탭에 표시됩니다."
+            )
+        else:
+            next_step = "30분 갱신 루프를 유지하면 새 QA 플래그가 생길 때 이 탭에 작업이 표시됩니다."
+    rows = []
+    for item in items[:6]:
+        ticker = html.escape(str(item.get("ticker") or ""))
+        primary_action = html.escape(_qa_action_label(str(item.get("primary_action") or "")))
+        latest = html.escape(str(item.get("latest_report_date") or "-"))
+        reasons = html.escape(", ".join(_qa_reason_label(str(reason)) for reason in item.get("auto_issue_reasons", [])[:3]) or "-")
+        rows.append(
+            "<div class='sig warn'>"
+            f"<span class='src'>{ticker}</span>"
+            f"<span class='detail'>{primary_action} · {reasons}</span>"
+            f"<span class='right'>{latest}</span>"
+            "</div>"
+        )
+    rows_html = "\n".join(rows) or "<div class='sig-empty'>No active QA action</div>"
+    return f"""
+    <div class="research-card op-next">
+      <div class="head">
+        <div>
+          <div class="meta">해야 할 작업 · 자동 QA 작업 큐</div>
+          <div class="title">{html.escape(title)}</div>
+        </div>
+        <div class="pill">작업 {summary['action_item_count']}</div>
+      </div>
+      <div class="research-grid">
+        <div class="research-cell"><b>섹션 재작성</b>{summary['section_rewrite_count']}</div>
+        <div class="research-cell"><b>소스 보강</b>{summary['source_refresh_count']}</div>
+        <div class="research-cell"><b>탐색 완료</b>{summary['source_refresh_attempted_no_new_source_count']}</div>
+        <div class="research-cell"><b>QA 샘플</b>{summary['sample_count']}</div>
+        <div class="research-cell"><b>다음 작업</b>{html.escape(next_step)}</div>
+      </div>
+      {rows_html}
+    </div>
+    """
+
+
+def _qa_action_label(action: str) -> str:
+    labels = {
+        "section_rewrite": "섹션 재작성",
+        "source_refresh": "소스 보강",
+    }
+    return labels.get(action, action or "-")
+
+
+def _qa_reason_label(reason: str) -> str:
+    labels = {
+        "stale_or_missing_latest_report": "최신 리포트 보강 필요",
+        "weak_source_quality": "본문 근거 부족",
+        "headline:starts_mid_sentence": "제목 문장 깨짐",
+        "headline:ends_mid_sentence": "제목 문장 잘림",
+        "stock_view:starts_mid_sentence": "종목 의견 문장 깨짐",
+        "valuation:starts_mid_sentence": "밸류 문장 깨짐",
+        "earnings:starts_mid_sentence": "실적 문장 깨짐",
+        "risk:explicit_empty_section": "리스크 섹션 비어 있음",
+        "growth:explicit_empty_section": "성장 섹션 비어 있음",
+        "stock_view:explicit_empty_section": "종목 의견 섹션 비어 있음",
+    }
+    return labels.get(reason, reason or "-")
+
+
+def _research_qa_action_item_html(item: dict[str, Any]) -> str:
+    ticker = html.escape(str(item.get("ticker") or ""))
+    latest = html.escape(str(item.get("latest_report_date") or "-"))
+    actions = ", ".join(_qa_action_label(str(action)) for action in item.get("actions", [])) or "-"
+    reasons = ", ".join(_qa_reason_label(str(reason)) for reason in item.get("auto_issue_reasons", [])) or "-"
+    next_step = str(item.get("suggested_next_step") or "")
+    if next_step == "Run supplemental source discovery for this ticker before another QA pass.":
+        next_step = "이 종목의 최신 공개 리포트나 원문 PDF를 먼저 보강한 뒤 QA를 다시 돌립니다."
+    elif next_step == "Re-run stored report body analysis for this ticker, then regenerate ticker briefs and QA artifacts.":
+        next_step = "저장된 리포트 본문 분석을 다시 돌린 뒤 종목 브리프와 QA 산출물을 재생성합니다."
+    elif next_step == "Refresh source coverage first, then re-run body analysis and regenerate QA artifacts.":
+        next_step = "소스 보강을 먼저 실행하고, 이후 본문 재분석과 QA 산출물 재생성을 진행합니다."
+    return f"""
+    <div class="research-card">
+      <div class="head">
+        <div>
+          <div class="meta">작업 대상 · {ticker}</div>
+          <div class="title">{html.escape(_qa_action_label(str(item.get('primary_action') or '')))}</div>
+        </div>
+        <div class="pill">{latest}</div>
+      </div>
+      <div class="research-grid">
+        <div class="research-cell"><b>필요 작업</b>{html.escape(actions)}</div>
+        <div class="research-cell"><b>감지 이유</b>{html.escape(reasons)}</div>
+        <div class="research-cell"><b>다음 처리</b>{html.escape(next_step or '작업 큐의 명령을 기준으로 처리합니다.')}</div>
+      </div>
+    </div>
+    """
+
+
+def _actionable_quality_issues(
+    quality_report: dict[str, Any],
+    queue_result: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    issues = [item for item in quality_report.get("issues", []) if isinstance(item, dict)]
+    if not queue_result or queue_result.get("status") != "ok":
+        return issues
+    action_by_ticker = dict(queue_result.get("action_by_ticker") or {})
+    return [
+        issue
+        for issue in issues
+        if action_by_ticker.get(str(issue.get("ticker") or "")) != "latest_report_not_found"
+    ]
+
+
+def _latest_not_found_quality_issues(
+    quality_report: dict[str, Any],
+    queue_result: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    issues = [item for item in quality_report.get("issues", []) if isinstance(item, dict)]
+    if not queue_result or queue_result.get("status") != "ok":
+        return []
+    action_by_ticker = dict(queue_result.get("action_by_ticker") or {})
+    return [
+        issue
+        for issue in issues
+        if action_by_ticker.get(str(issue.get("ticker") or "")) == "latest_report_not_found"
+    ]
+
+
+def build_research_supplement_needs(
+    artifact: dict[str, Any],
+    positions: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+    stale_days: int = 45,
+) -> list[dict[str, Any]]:
+    portfolio_tickers = {str(position.get("ticker")) for position in positions if position.get("ticker")}
+    names = {
+        str(position.get("ticker")): str(position.get("name") or "")
+        for position in positions
+        if position.get("ticker")
+    }
+    quality_report = build_ticker_research_quality_report(
+        artifact,
+        portfolio_tickers=portfolio_tickers,
+        now=now,
+        stale_days=stale_days,
+    )
+    needs: list[dict[str, Any]] = []
+    for ticker in quality_report.get("portfolio_missing", []):
+        needs.append(
+            {
+                "ticker": ticker,
+                "name": names.get(ticker, ""),
+                "status": "missing_brief",
+                "latest_report_date": "",
+                "reasons": ["missing_brief"],
+                "missing_sections": ["stock_view", "growth", "earnings", "risk"],
+                "source_quality": "",
+                "confidence": 0.0,
+                "report_count": 0,
+                "report_age_days": None,
+            }
+        )
+    for issue in quality_report.get("issues", []):
+        ticker = str(issue.get("ticker") or "")
+        if portfolio_tickers and ticker not in portfolio_tickers:
+            continue
+        needs.append(
+            {
+                "ticker": ticker,
+                "name": names.get(ticker, ""),
+                "status": "needs_review",
+                "latest_report_date": str(issue.get("latest_report_date") or ""),
+                "reasons": list(issue.get("reasons") or []),
+                "missing_sections": list(issue.get("missing_sections") or []),
+                "source_quality": str(issue.get("source_quality") or ""),
+                "confidence": _to_float(issue.get("confidence")),
+                "report_count": int(_to_float(issue.get("report_count"))),
+                "report_age_days": issue.get("report_age_days"),
+            }
+        )
+    priority = {"missing_brief": 0, "needs_review": 1}
+    needs.sort(key=lambda row: (priority.get(str(row.get("status")), 9), str(row.get("ticker") or "")))
+    return needs
+
+
+def _source_quality_label(value: object) -> str:
+    source_quality = str(value or "").strip()
+    labels = {
+        "full_text": "Full text · 원문 기반",
+        "partial_text": "Partial text · 일부 본문",
+        "supplemental_summary": "Supplemental · 수동 보충",
+        "title_or_sparse": "Sparse · 제목/요약 중심",
+        "not_pdf": "Metadata · PDF 아님",
+        "not_requested": "Metadata · 본문 미요청",
+        "login_required": "Locked · 로그인 필요",
+        "fetch_failed": "Fetch failed · 수집 실패",
+        "analysis_failed": "Analysis failed · 분석 실패",
+        "brief_failed": "Brief fallback · 브리프 보정",
+    }
+    return labels.get(source_quality, source_quality)
+
+
+def _report_age_days(value: object, reference: datetime) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        report_date = datetime.fromisoformat(text[:10])
+    except ValueError:
+        return None
+    if reference.tzinfo is not None:
+        report_date = report_date.replace(tzinfo=reference.tzinfo)
+    return max(0, (reference - report_date).days)
+
+
+def _ticker_brief_row_key(row: dict[str, Any]) -> tuple[str, int, float]:
+    return (
+        str(row.get("report_date") or ""),
+        _quality_rank(row),
+        _to_float(row.get("confidence")),
+    )
+
+
+def _ticker_source_report(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "report_date": str(row.get("report_date") or ""),
+        "source": str(row.get("source") or ""),
+        "broker": str(row.get("broker") or ""),
+        "title": str(row.get("title") or ""),
+        "url": str(row.get("source_url") or ""),
+        "source_quality": str(row.get("body_text_status") or ""),
+        "confidence": _to_float(row.get("confidence")),
+        "evidence_terms": str(row.get("evidence_terms") or ""),
+    }
+
+
+def research_report_display_limit(choice: str, total_count: int) -> int:
+    if choice == "all":
+        return max(0, total_count)
+    try:
+        return max(1, int(choice))
+    except (TypeError, ValueError):
+        return DEFAULT_VISIBLE_RESEARCH_CARDS
 
 
 def snapshot_is_stale(
@@ -443,6 +1474,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
   display: flex; align-items: center; gap: 12px;
   font-family: var(--mono); font-size: 12.5px; color: var(--tx-0);
   text-transform: uppercase; letter-spacing: 0.1em;
+  min-width: 0; overflow-wrap: anywhere;
 }}
 .brand .dot {{ width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent-dim); }}
 .brand .sep {{ color: var(--tx-3); }}
@@ -452,6 +1484,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
   padding: 3px 8px; font-family: var(--mono); font-size: 10.5px; font-weight: 500;
   letter-spacing: 0.12em; text-transform: uppercase; border-radius: 2px;
   border: 1px solid currentColor; line-height: 1.4;
+  max-width: 100%; white-space: normal; overflow-wrap: anywhere; flex-shrink: 1;
 }}
 .pill.read-only {{ color: var(--warn); }}
 .pill.paper {{ color: var(--accent); }}
@@ -464,7 +1497,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 .tape .q .chg.gain {{ color: var(--gain); }}
 .tape .q .chg.loss {{ color: var(--loss); }}
 
-.stamp {{ font-family: var(--mono); font-size: 11px; color: var(--tx-2); display: flex; gap: 10px; align-items: center; }}
+.stamp {{ font-family: var(--mono); font-size: 11px; color: var(--tx-2); display: flex; gap: 10px; align-items: center; min-width: 0; overflow-wrap: anywhere; }}
 .stamp .clock-dot {{ width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 6px var(--ok); }}
 .stamp .ms[data-status="CLOSED"] .clock-dot {{ background: var(--loss); box-shadow: none; }}
 .stamp .ms {{ display: inline-flex; align-items: center; gap: 6px; color: var(--tx-1); }}
@@ -517,8 +1550,8 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 .hi-card.gain .stripe {{ background: var(--gain); }}
 .hi-card.loss .stripe {{ background: var(--loss); }}
 .hi-card .tag {{ font-family: var(--mono); font-size: 10px; color: var(--tx-3); text-transform: uppercase; letter-spacing: 0.14em; }}
-.hi-card .name {{ display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }}
-.hi-card .name .nm {{ color: var(--tx-0); font-weight: 500; font-size: 14px; }}
+.hi-card .name {{ display: flex; align-items: baseline; gap: 8px; margin-top: 2px; min-width: 0; overflow-wrap: anywhere; }}
+.hi-card .name .nm {{ color: var(--tx-0); font-weight: 500; font-size: 14px; min-width: 0; overflow-wrap: anywhere; }}
 .hi-card .name .tk {{ font-family: var(--mono); font-size: 11px; color: var(--tx-2); }}
 .hi-card .sub {{ font-family: var(--mono); font-size: 11px; color: var(--tx-2); margin-top: 2px; }}
 .hi-card .right {{ text-align: right; min-width: 90px; }}
@@ -552,7 +1585,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 .htable tbody tr:last-child td {{ border-bottom: 0; }}
 .htable tbody tr.selected {{ background: var(--bg-3); box-shadow: inset 3px 0 0 var(--accent); }}
 .htable .rank {{ display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; font-family: var(--mono); font-size: 11px; color: var(--tx-2); border: 1px solid var(--line-2); border-radius: 2px; }}
-.htable .ticker-cell {{ display: flex; flex-direction: column; gap: 2px; }}
+.htable .ticker-cell {{ display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }}
 .htable .ticker-cell .tk {{ font-family: var(--mono); font-size: 12px; color: var(--accent); letter-spacing: 0.04em; }}
 .htable .ticker-cell .nm {{ color: var(--tx-0); font-weight: 500; font-size: 13px; }}
 .htable .ticker-cell .sec {{ font-family: var(--mono); font-size: 10px; color: var(--tx-3); text-transform: uppercase; letter-spacing: 0.1em; }}
@@ -573,6 +1606,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 /* Detail panel */
 .detail {{ background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }}
 .detail-head {{ display: flex; justify-content: space-between; gap: 10px; padding: 14px; border-bottom: 1px solid var(--line); align-items: flex-start; }}
+.detail-head > div:first-child {{ min-width: 0; overflow-wrap: anywhere; }}
 .detail-head .tk {{ font-family: var(--mono); font-size: 11px; color: var(--accent); letter-spacing: 0.08em; }}
 .detail-head .nm {{ font-size: 20px; font-weight: 600; color: var(--tx-0); letter-spacing: -0.01em; margin-top: 2px; }}
 .detail-head .sec {{ font-family: var(--mono); font-size: 10px; color: var(--tx-3); text-transform: uppercase; letter-spacing: 0.14em; margin-top: 6px; }}
@@ -610,13 +1644,35 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 .sig.up {{ border-left-color: var(--gain); }}
 .sig.down {{ border-left-color: var(--loss); }}
 .sig .src {{ font-family: var(--mono); font-size: 10px; color: var(--tx-2); text-transform: uppercase; letter-spacing: 0.12em; }}
-.sig .detail {{ color: var(--tx-1); }}
+.sig .detail {{ color: var(--tx-1); min-width: 0; overflow-wrap: anywhere; }}
 .sig .right {{ font-family: var(--mono); font-size: 11px; color: var(--tx-2); text-align: right; }}
 .sig .stars {{ color: var(--accent); }}
 .sig-empty {{ font-family: var(--mono); font-size: 11px; color: var(--tx-3); border: 1px dashed var(--line); border-radius: 2px; padding: 14px; text-align: center; margin-top: 8px; }}
 
+.research-card {{
+  margin: 10px 0; padding: 16px 18px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: visible; word-break: keep-all; overflow-wrap: anywhere;
+}}
+.research-card .head {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }}
+.research-card .head > div:first-child {{ min-width: 0; overflow-wrap: anywhere; }}
+.research-card .meta {{ font-family: var(--mono); font-size: 11px; color: var(--tx-2); }}
+.research-card .title {{ font-weight: 800; font-size: 18px; color: var(--tx-0); margin-top: 4px; line-height: 1.35; }}
+.research-card .brief {{ margin: 12px 0 0 0; padding-left: 18px; line-height: 1.65; color: var(--tx-1); }}
+.research-card .brief li {{ margin: 4px 0; }}
+.research-card .brief b {{ color: var(--tx-0); }}
+.research-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }}
+.research-cell {{ background: var(--bg-1); border: 1px solid var(--line); border-radius: 2px; padding: 10px 12px; line-height: 1.55; }}
+.research-cell b {{ display: block; color: var(--tx-0); margin-bottom: 4px; }}
+.research-cell .empty {{ color: var(--tx-3); font-family: var(--mono); font-size: 11px; }}
+.research-details {{ margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; color: var(--tx-2); }}
+.research-details summary {{ cursor: pointer; color: var(--accent); font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; }}
+.research-details .raw {{ margin-top: 8px; display: grid; gap: 8px; line-height: 1.55; }}
+@media (max-width: 900px) {{ .research-grid {{ grid-template-columns: 1fr; }} .research-card .head {{ flex-direction: column; }} }}
+
 /* Footer */
 .foot {{ margin-top: 14px; display: flex; justify-content: space-between; gap: 14px; padding: 10px 14px; background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius); font-family: var(--mono); font-size: 10.5px; color: var(--tx-3); text-transform: uppercase; letter-spacing: 0.12em; }}
+.foot span {{ min-width: 0; overflow-wrap: anywhere; }}
 .foot .warning {{ display: inline-flex; gap: 8px; align-items: center; color: var(--warn); }}
 
 /* Streamlit native button → row selectors. Match the table row style. */
@@ -771,11 +1827,12 @@ def _highlight_cards_html(positions: list[dict[str, Any]]) -> str:
         gain_cls = "gain" if pl_rate >= 0 else "loss"
         rank = p.get("rationale", {}).get("rank")
         score = _to_float(p.get("rationale", {}).get("total_score"))
+        rank_text = html.escape(str(rank if rank is not None else "—"))
         right = (
             f"<div class='v num'>{pl_rate:+.2f}%</div>"
             f"<div class='pct {gain_cls}'>{'+' if pl >= 0 else ''}{_krw_int(pl)} 원</div>"
         ) if kind == "rate" else (
-            f"<div class='v num'>#{rank if rank is not None else '—'}</div>"
+            f"<div class='v num'>#{rank_text}</div>"
             f"<div class='pct' style='color:var(--accent);'>score {score:.2f}</div>"
         )
         return f"""
@@ -826,7 +1883,7 @@ def _holdings_table_html(positions: list[dict[str, Any]], total_mv: float,
         factors = p.get("rationale", {}).get("factor_scores", {}) or {}
 
         cells = [
-            f"<td class='left'><span class='rank'>{p.get('rationale',{}).get('rank','—')}</span></td>",
+            f"<td class='left'><span class='rank'>{html.escape(str(p.get('rationale',{}).get('rank','—')))}</span></td>",
             f"""<td class='left'><div class='ticker-cell'>
               <span class='tk'>{html.escape(ticker)}</span>
               <span class='nm'>{html.escape(str(p.get('name','')))}</span>
@@ -872,7 +1929,11 @@ def _holdings_table_html(positions: list[dict[str, Any]], total_mv: float,
     """
 
 
-def _detail_html(position: dict[str, Any]) -> str:
+def _detail_html(
+    position: dict[str, Any],
+    *,
+    brief_by_ticker: dict[str, dict[str, Any]] | None = None,
+) -> str:
     if not position:
         return "<div class='detail'><div class='detail-body sig-empty'>선택된 종목이 없습니다.</div></div>"
     r = position.get("rationale") or {}
@@ -952,13 +2013,36 @@ def _detail_html(position: dict[str, Any]) -> str:
     else:
         sig_html = "<div class='sig-empty'>No active signal · 활성 시그널 없음</div>"
 
+    ticker_brief = (brief_by_ticker or {}).get(str(position.get("ticker") or ""))
+    research_html = ""
+    if ticker_brief:
+        sections = ticker_brief.get("sections") or {}
+        risk = _first_report_text(sections.get("risk"))
+        headline = str(ticker_brief.get("headline") or sections.get("stock_view") or "")
+        report_count = int(_to_float((ticker_brief.get("quality") or {}).get("report_count")))
+        research_html = (
+            "<div>"
+            "<div class='subhead'>Research Brief</div>"
+            "<div class='sig up'>"
+            f"<span class='src'>{html.escape(str(ticker_brief.get('latest_report_date') or ''))}</span>"
+            f"<span class='detail'>{html.escape(headline)}</span>"
+            f"<span class='right'>{html.escape(str(ticker_brief.get('opinion') or ''))}</span>"
+            "</div>"
+            "<div class='sig warn'>"
+            "<span class='src'>Risk</span>"
+            f"<span class='detail'>{html.escape(risk or 'No explicit risk sentence')}</span>"
+            f"<span class='right'>reports {report_count}</span>"
+            "</div>"
+            "</div>"
+        )
+
     return f"""
     <div class='detail'>
       <div class='detail-head'>
         <div>
           <div class='tk'>{html.escape(str(position.get('ticker','')))} · {html.escape(str(position.get('sector','—')))}</div>
           <div class='nm'>{html.escape(str(position.get('name','')))}</div>
-          <div class='sec'>Rank #{r.get('rank','—')} · Score {_to_float(r.get('total_score')):.4f} · {html.escape(str(r.get('execution_status','—')))}</div>
+          <div class='sec'>Rank #{html.escape(str(r.get('rank','—')))} · Score {_to_float(r.get('total_score')):.4f} · {html.escape(str(r.get('execution_status','—')))}</div>
         </div>
         <div class='right'>
           <div class='last'>₩{_krw_int(position.get('current_price'))}</div>
@@ -983,6 +2067,7 @@ def _detail_html(position: dict[str, Any]) -> str:
           <div class='subhead'>시그널 · Signals</div>
           {sig_html}
         </div>
+        {research_html}
       </div>
     </div>
     """
@@ -1079,6 +2164,59 @@ def render_dashboard(snapshot: dict[str, Any]) -> None:
     if "selected_ticker" not in session_state and positions:
         session_state["selected_ticker"] = positions[0].get("ticker")
 
+    ticker_brief_result = load_ticker_research_briefs()
+    ticker_brief_by_ticker = dict(ticker_brief_result.get("by_ticker") or {})
+
+    if hasattr(st, "tabs"):
+        portfolio_tab, needs_tab, tasks_tab, ticker_tab, research_tab = st.tabs(
+            ["Portfolio", "Supplement Needs", "해야 할 작업", "Ticker Briefs", "Research Reports"]
+        )
+        with portfolio_tab:
+            _render_portfolio_tab(
+                st,
+                snapshot,
+                tweaks,
+                positions,
+                total_mv,
+                session_state,
+                ticker_brief_by_ticker=ticker_brief_by_ticker,
+            )
+        with needs_tab:
+            _render_research_supplement_needs_tab(st, positions, ticker_brief_result)
+        with tasks_tab:
+            _render_research_qa_action_tab(st)
+        with ticker_tab:
+            _render_ticker_research_brief_tab(st, positions, ticker_brief_result)
+        with research_tab:
+            _render_research_report_tab(st, positions)
+        return
+
+    _render_portfolio_tab(
+        st,
+        snapshot,
+        tweaks,
+        positions,
+        total_mv,
+        session_state,
+        ticker_brief_by_ticker=ticker_brief_by_ticker,
+    )
+    _render_research_supplement_needs_tab(st, positions, ticker_brief_result)
+    _render_research_qa_action_tab(st)
+    _render_ticker_research_brief_tab(st, positions, ticker_brief_result)
+    _render_research_report_tab(st, positions)
+
+
+def _render_portfolio_tab(
+    st,
+    snapshot: dict[str, Any],
+    tweaks: dict[str, Any],
+    positions: list[dict[str, Any]],
+    total_mv: float,
+    session_state,
+    *,
+    ticker_brief_by_ticker: dict[str, dict[str, Any]] | None = None,
+) -> None:
+
     # 1. topbar + hero (full width)
     st.markdown(_topbar_html(snapshot), unsafe_allow_html=True)
     hero_col, side_col = st.columns([1.45, 1], gap="small")
@@ -1127,7 +2265,10 @@ def render_dashboard(snapshot: dict[str, Any]) -> None:
         positions[0] if positions else None,
     )
     with detail_col:
-        st.markdown(_detail_html(selected_pos), unsafe_allow_html=True)
+        st.markdown(
+            _detail_html(selected_pos, brief_by_ticker=ticker_brief_by_ticker),
+            unsafe_allow_html=True,
+        )
 
     # 3. footer
     warnings = snapshot.get("warnings") or []
@@ -1145,6 +2286,634 @@ def render_dashboard(snapshot: dict[str, Any]) -> None:
         f"{warning_html}</div>",
         unsafe_allow_html=True,
     )
+
+
+def _render_research_report_tab(st, positions: list[dict[str, Any]]) -> None:
+    portfolio_tickers = {str(position.get("ticker")) for position in positions if position.get("ticker")}
+    result = load_research_report_briefs()
+    if result["status"] != "ok":
+        st.warning(f"리포트 요약 데이터를 읽지 못했습니다: {result.get('error', 'unknown error')}")
+        return
+
+    rows = list(result.get("rows") or [])
+    if not rows:
+        st.info("아직 표시할 리포트 분석 데이터가 없습니다.")
+        return
+
+    opinion_options = ["all"] + sorted({str(row.get("investment_opinion")) for row in rows if row.get("investment_opinion")})
+    source_options = ["all"] + sorted({str(row.get("source")) for row in rows if row.get("source")})
+
+    st.markdown(
+        "<div class='section-label'><span>Research Briefs · 리포트 핵심 요약</span>"
+        f"<span class='count'>{len(rows)} reports loaded</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    controls = st.columns([1, 1, 1, 1.3], gap="small") if hasattr(st, "columns") else []
+    if controls:
+        with controls[0]:
+            portfolio_only = st.checkbox("보유 종목만", value=False) if hasattr(st, "checkbox") else False
+        with controls[1]:
+            opinion = st.selectbox("의견", opinion_options, index=0) if hasattr(st, "selectbox") else "all"
+        with controls[2]:
+            display_choice = st.selectbox("표시 개수", ["30", "100", "300", "all"], index=1) if hasattr(st, "selectbox") else "100"
+        with controls[3]:
+            query = st.text_input("검색", value="", placeholder="종목코드, 업황, 신사업, 리스크") if hasattr(st, "text_input") else ""
+    else:
+        portfolio_only = False
+        opinion = "all"
+        display_choice = "100"
+        query = ""
+    source = st.selectbox("출처", source_options, index=0) if hasattr(st, "selectbox") else "all"
+
+    filtered = filter_research_report_briefs(
+        rows,
+        portfolio_tickers=portfolio_tickers,
+        portfolio_only=portfolio_only,
+        opinion=opinion,
+        source=source,
+        query=query,
+    )
+
+    opinion_counts = _count_by(filtered, "investment_opinion")
+    source_quality_counts = _count_by(filtered, "body_text_status")
+    metric_cols = st.columns(4, gap="small") if hasattr(st, "columns") else []
+    metrics = [
+        ("표시 리포트", len(filtered)),
+        ("Positive", opinion_counts.get("positive", 0)),
+        ("Mixed/Neutral", opinion_counts.get("mixed", 0) + opinion_counts.get("neutral", 0)),
+        ("본문 추출", _body_text_available_count(source_quality_counts)),
+    ]
+    for index, (label, value) in enumerate(metrics):
+        if metric_cols:
+            with metric_cols[index]:
+                st.metric(label, value)
+
+    if not filtered:
+        st.info("조건에 맞는 리포트가 없습니다.")
+        return
+
+    display_limit = research_report_display_limit(display_choice, len(filtered))
+    visible_rows = filtered[:display_limit]
+    if hasattr(st, "caption"):
+        st.caption(f"Showing {len(visible_rows)} of {len(filtered)} filtered reports.")
+
+    for row in visible_rows:
+        st.markdown(_research_report_card_html(row), unsafe_allow_html=True)
+
+
+def _render_ticker_research_brief_tab(
+    st,
+    positions: list[dict[str, Any]],
+    result: dict[str, Any],
+) -> None:
+    if result.get("status") == "missing":
+        st.info("Ticker brief artifact is missing. Run scripts.generate_research_report_ticker_briefs.")
+        return
+    if result.get("status") != "ok":
+        st.warning(f"Ticker brief artifact is invalid: {result.get('error', 'unknown error')}")
+        return
+
+    artifact = result.get("artifact") or {}
+    ticker_briefs = list(artifact.get("tickers") or [])
+    if not ticker_briefs:
+        st.info("No ticker-level research briefs are available yet.")
+        return
+
+    portfolio_tickers = {str(position.get("ticker")) for position in positions if position.get("ticker")}
+    summary = artifact.get("summary") or {}
+    llm = artifact.get("llm") or {}
+    quality_report = build_ticker_research_quality_report(
+        artifact,
+        portfolio_tickers=portfolio_tickers,
+    )
+    quality_queue = load_research_quality_queue()
+    quality_summary = _quality_dashboard_summary(quality_report, quality_queue)
+    qa_sample = load_research_brief_qa_sample()
+
+    st.markdown(
+        "<div class='section-label'><span>Ticker Integrated Briefs</span>"
+        f"<span class='count'>{summary.get('ticker_count', len(ticker_briefs))} tickers · "
+        f"{summary.get('source_report_count', 0)} reports · LLM {html.escape(str(llm.get('status', 'unknown')))}</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    metric_cols = st.columns(4, gap="small") if hasattr(st, "columns") else []
+    metrics = [
+        ("Complete", quality_summary["complete_count"]),
+        ("Needs review", quality_summary["actionable_issue_count"]),
+        ("Latest not found", quality_summary["latest_report_not_found_count"]),
+        ("Portfolio missing", quality_summary["portfolio_missing_count"]),
+    ]
+    for index, (label, value) in enumerate(metrics):
+        if metric_cols:
+            with metric_cols[index]:
+                st.metric(label, value)
+
+    st.markdown(_research_operator_next_action_html(quality_summary), unsafe_allow_html=True)
+    st.markdown(_research_qa_summary_html(qa_sample), unsafe_allow_html=True)
+
+    latest_not_found_rows = _latest_not_found_quality_issues(quality_report, quality_queue)[:8]
+    if latest_not_found_rows:
+        st.markdown(
+            "<div class='section-label'><span>Latest Not Found</span>"
+            f"<span class='count'>{quality_summary['latest_report_not_found_count']} tickers tracked separately</span></div>",
+            unsafe_allow_html=True,
+        )
+        for issue in latest_not_found_rows:
+            st.markdown(_research_quality_issue_html(issue), unsafe_allow_html=True)
+
+    issue_rows = _actionable_quality_issues(quality_report, quality_queue)[:8]
+    if issue_rows:
+        st.markdown(
+            "<div class='section-label'><span>Quality Review Queue</span>"
+            f"<span class='count'>{quality_summary['actionable_issue_count']} tickers need review</span></div>",
+            unsafe_allow_html=True,
+        )
+        for issue in issue_rows:
+            st.markdown(_research_quality_issue_html(issue), unsafe_allow_html=True)
+    if quality_report["portfolio_missing"]:
+        st.warning(
+            "Portfolio tickers missing research briefs: "
+            + ", ".join(quality_report["portfolio_missing"][:12])
+        )
+
+    controls = st.columns([1, 1.3], gap="small") if hasattr(st, "columns") else []
+    if controls:
+        with controls[0]:
+            portfolio_only = st.checkbox("Portfolio only", value=True) if hasattr(st, "checkbox") else True
+        with controls[1]:
+            query = st.text_input("Search ticker brief", value="", placeholder="ticker, headline, risk") if hasattr(st, "text_input") else ""
+    else:
+        portfolio_only = True
+        query = ""
+
+    filtered = ticker_briefs
+    if portfolio_only:
+        filtered = [row for row in filtered if str(row.get("ticker")) in portfolio_tickers]
+    if query:
+        needle = query.strip().lower()
+        filtered = [
+            row for row in filtered if needle and needle in json.dumps(row, ensure_ascii=False).lower()
+        ]
+
+    if hasattr(st, "caption"):
+        st.caption(f"Showing {len(filtered)} of {len(ticker_briefs)} ticker briefs.")
+    if not filtered:
+        st.info("No ticker briefs match the current filters.")
+        return
+
+    for row in filtered[:100]:
+        st.markdown(_ticker_research_brief_card_html(row), unsafe_allow_html=True)
+
+
+def _render_research_qa_action_tab(st) -> None:
+    qa_action_queue = load_research_qa_action_queue()
+    st.markdown(_research_qa_action_queue_html(qa_action_queue), unsafe_allow_html=True)
+
+    if qa_action_queue.get("status") != "ok":
+        return
+    items = [item for item in qa_action_queue.get("items", []) if isinstance(item, dict)]
+    if not items:
+        return
+    st.markdown(
+        "<div class='section-label'><span>자동 작업 목록</span>"
+        f"<span class='count'>{len(items)}개 작업</span></div>",
+        unsafe_allow_html=True,
+    )
+    for item in items:
+        st.markdown(_research_qa_action_item_html(item), unsafe_allow_html=True)
+
+
+def _render_research_supplement_needs_tab(
+    st,
+    positions: list[dict[str, Any]],
+    result: dict[str, Any],
+) -> None:
+    if result.get("status") == "missing":
+        st.info("Ticker brief artifact is missing. Run the dashboard artifact refresh first.")
+        return
+    if result.get("status") != "ok":
+        st.warning(f"Ticker brief artifact is invalid: {result.get('error', 'unknown error')}")
+        return
+    artifact = result.get("artifact") or {}
+    needs = build_research_supplement_needs(artifact, positions)
+    st.markdown(
+        "<div class='section-label'><span>Supplement Needs</span>"
+        f"<span class='count'>{len(needs)} portfolio tickers need action</span></div>",
+        unsafe_allow_html=True,
+    )
+    metric_cols = st.columns(3, gap="small") if hasattr(st, "columns") else []
+    metrics = [
+        ("Missing", sum(1 for row in needs if row.get("status") == "missing_brief")),
+        ("Needs review", sum(1 for row in needs if row.get("status") == "needs_review")),
+        ("Portfolio", len(positions)),
+    ]
+    for index, (label, value) in enumerate(metrics):
+        if metric_cols:
+            with metric_cols[index]:
+                st.metric(label, value)
+    if not needs:
+        message = "No portfolio tickers currently need supplemental research."
+        if hasattr(st, "info"):
+            st.info(message)
+        else:
+            st.markdown(message)
+        return
+    if hasattr(st, "caption"):
+        st.caption(
+            "Fill data/supplemental_research_reports.template.csv or export a prefilled template, "
+            "then run scripts.refresh_public_dashboard_artifacts with --supplemental-table-input."
+        )
+    for row in needs[:100]:
+        st.markdown(_research_supplement_need_html(row), unsafe_allow_html=True)
+
+
+def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(key) or "")
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _body_text_available_count(source_quality_counts: dict[str, int]) -> int:
+    return (
+        source_quality_counts.get("extracted", 0)
+        + source_quality_counts.get("full_text", 0)
+        + source_quality_counts.get("partial_text", 0)
+    )
+
+
+REPORT_NOISE_TERMS = (
+    "매수 중립",
+    "중립(보유) 매도",
+    "Underperform",
+    "Neutral(중립)",
+    "투자등급",
+    "유니버스 투자등급",
+    "Company Brief",
+    "Issue Comment",
+    "본 자료에 수록된",
+    "영업이익/금융비용",
+    "수정주가",
+    "목표 PER",
+    "12MF PER",
+    "12MF PBR",
+    "그림",
+    "향후 6개월간 업종지수",
+    "담당 애널리스트",
+    "추천일자 투자의견",
+    "목표가격",
+    "좌축",
+    "우축",
+    "(좌)",
+    "(우)",
+    "수익성(%)",
+    "단기투자자산감소",
+    "각 법인 지분율 고려",
+    "영업실적 및 주요 투자지표",
+    "DAISHIN SECURITIES",
+    "재무활동 현금흐름",
+    "Trading Buy",
+    "Not covered",
+    "Hold 추천",
+    "추천기준일",
+    "평균종가대비",
+    "투자판단 3단계",
+    "매수 86",
+    "중립 10",
+    "유동성공급자",
+    "절대수익률",
+    "업종지수상승률",
+    "리오에 따라",
+)
+REPORT_PLACEHOLDER_TERMS = (
+    "리포트의 본문 근거 추출이 제한적입니다",
+    "본문 근거 추출은 제한적입니다",
+    "본문 근거 추출이 제한적입니다",
+)
+
+
+def _research_report_card_html(row: dict[str, Any]) -> str:
+    opinion = html.escape(str(row.get("investment_opinion") or "unknown"))
+    ticker = html.escape(str(row.get("ticker") or ""))
+    title = html.escape(str(row.get("title") or ""))
+    report_date = html.escape(str(row.get("report_date") or ""))
+    source = html.escape(str(row.get("source") or ""))
+    confidence = _to_float(row.get("confidence"))
+    core_text = _first_report_text(row.get("buy_thesis"), row.get("summary"))
+    growth_text = _first_report_text(row.get("growth_drivers"))
+    earnings_text = _first_report_text(
+        row.get("earnings_drivers"),
+        row.get("valuation_view"),
+        row.get("target_price_rationale"),
+    )
+    new_business_text = _first_report_text(row.get("new_business"))
+    risk_text = _first_report_text(row.get("risk_factors"), row.get("sell_or_risk_thesis"))
+    valuation_text = _first_report_text(row.get("valuation_view"), row.get("target_price_rationale"))
+    stored_summary = " / ".join(_clean_report_fragments(row.get("summary"))) or "-"
+    thesis = _section_or_empty(core_text, "종목 의견 문장은 추출되지 않았습니다.")
+    growth = _section_or_empty(growth_text, "업황/성장 문장은 추출되지 않았습니다.")
+    earnings = _section_or_empty(earnings_text, "실적/밸류 문장은 추출되지 않았습니다.")
+    risk = _section_or_empty(risk_text, "명시 리스크 문장은 추출되지 않았습니다.")
+    brief_items = _research_brief_items(
+        core=core_text,
+        growth=growth_text,
+        new_business=new_business_text,
+        earnings=earnings_text,
+        valuation=valuation_text,
+        risk=risk_text,
+    )
+    brief_html = "".join(
+        f"<li><b>{html.escape(label)}</b>: {html.escape(text)}</li>"
+        for label, text in brief_items
+    )
+    if not brief_html:
+        brief_html = "<li><b>핵심</b>: 저장된 분석 문장이 부족합니다. 상세 문장을 확인해 주세요.</li>"
+    evidence = html.escape(str(row.get("evidence_terms") or ""))
+    return f"""
+    <div class="research-card">
+      <div class="head">
+        <div>
+          <div class="meta">{report_date} · {source} · confidence {confidence:.2f}</div>
+          <div class="title">{ticker} · {title}</div>
+        </div>
+        <div class="pill">{opinion}</div>
+      </div>
+      <ul class="brief">{brief_html}</ul>
+      <div class="research-grid">
+        <div class="research-cell"><b>종목 의견</b>{thesis}</div>
+        <div class="research-cell"><b>업황/성장</b>{growth}</div>
+        <div class="research-cell"><b>신사업/모멘텀</b>{_section_or_empty(new_business_text, "신사업/모멘텀 문장은 추출되지 않았습니다.")}</div>
+        <div class="research-cell"><b>실적/밸류</b>{earnings}</div>
+        <div class="research-cell"><b>리스크</b>{risk}</div>
+      </div>
+      <details class="research-details">
+        <summary>분석 문장 전체 보기</summary>
+        <div class="raw">
+          <div><b>근거 키워드</b>: {evidence or "-"}</div>
+          <div><b>목표가/밸류</b>: {html.escape(valuation_text or "-")}</div>
+          <div><b>정리된 저장 요약</b>: {html.escape(stored_summary)}</div>
+        </div>
+      </details>
+    </div>
+    """
+
+
+def _ticker_research_brief_card_html(row: dict[str, Any]) -> str:
+    ticker = html.escape(str(row.get("ticker") or ""))
+    latest = html.escape(str(row.get("latest_report_date") or ""))
+    opinion = html.escape(str(row.get("opinion") or "unknown"))
+    headline = html.escape(str(row.get("headline") or ""))
+    sections = row.get("sections") or {}
+    quality = row.get("quality") or {}
+    source_reports = list(row.get("source_reports") or [])
+    llm_status = str(quality.get("llm_status") or "disabled")
+    source_quality_label = html.escape(_source_quality_label(quality.get("source_quality")))
+    report_count = int(_to_float(quality.get("report_count")))
+
+    cells = [
+        ("Stock view", sections.get("stock_view"), "No stock-view sentence."),
+        ("Industry/Growth", sections.get("growth") or sections.get("industry"), "No growth sentence."),
+        ("Earnings", sections.get("earnings"), "No earnings sentence."),
+        ("Valuation", sections.get("valuation"), "No valuation sentence."),
+        ("New business", sections.get("new_business"), "No new-business sentence."),
+        ("Risk", sections.get("risk"), "No explicit risk sentence."),
+    ]
+    cells_html = "".join(
+        f"<div class='research-cell'><b>{html.escape(label)}</b>{_section_or_empty(_first_report_text(value), empty)}</div>"
+        for label, value, empty in cells
+    )
+    source_html = "".join(
+        "<div>"
+        f"<b>{html.escape(str(report.get('report_date') or ''))}</b> · "
+        f"{html.escape(str(report.get('broker') or report.get('source') or ''))} · "
+        f"{html.escape(str(report.get('title') or ''))}"
+        "</div>"
+        for report in source_reports[:5]
+    ) or "<div>-</div>"
+    return f"""
+    <div class="research-card">
+      <div class="head">
+        <div>
+          <div class="meta">Ticker Integrated Brief · {latest} · reports {report_count} · {source_quality_label}</div>
+          <div class="title">{ticker} · {headline}</div>
+        </div>
+        <div class="pill">{opinion}</div>
+      </div>
+      <ul class="brief">
+        <li><b>LLM {html.escape(llm_status)}</b>: External LLM summary is opt-in and cached separately.</li>
+      </ul>
+      <div class="research-grid">{cells_html}</div>
+      <details class="research-details">
+        <summary>Source reports</summary>
+        <div class="raw">{source_html}</div>
+      </details>
+    </div>
+    """
+
+
+def _research_quality_issue_html(issue: dict[str, Any]) -> str:
+    ticker = html.escape(str(issue.get("ticker") or ""))
+    reasons = ", ".join(str(reason) for reason in issue.get("reasons", [])) or "-"
+    missing = ", ".join(str(section) for section in issue.get("missing_sections", [])) or "-"
+    action_label, next_step = _quality_issue_action(issue)
+    source_quality = html.escape(_source_quality_label(issue.get("source_quality")))
+    confidence = _to_float(issue.get("confidence"))
+    latest = html.escape(str(issue.get("latest_report_date") or ""))
+    report_count = int(_to_float(issue.get("report_count")))
+    return f"""
+    <div class="research-card">
+      <div class="head">
+        <div>
+          <div class="meta">Quality Review · {latest} · reports {report_count} · confidence {confidence:.2f}</div>
+          <div class="title">{ticker} · {html.escape(reasons)}</div>
+        </div>
+        <div class="pill">{source_quality}</div>
+      </div>
+      <div class="research-grid">
+        <div class="research-cell"><b>Action</b>{html.escape(action_label)}</div>
+        <div class="research-cell"><b>Next step</b>{html.escape(next_step)}</div>
+        <div class="research-cell"><b>Reasons</b>{html.escape(reasons)}</div>
+        <div class="research-cell"><b>Missing sections</b>{html.escape(missing)}</div>
+      </div>
+    </div>
+    """
+
+
+def _quality_issue_action(issue: dict[str, Any]) -> tuple[str, str]:
+    reasons = {str(reason) for reason in issue.get("reasons", [])}
+    missing_sections = [str(section) for section in issue.get("missing_sections", []) if section]
+    source_quality = str(issue.get("source_quality") or "")
+    if "weak_source_quality" in reasons and missing_sections:
+        return "Source supplement", "Find or add a better public source/body text."
+    if "weak_source_quality" in reasons and not missing_sections:
+        return "Source age review", "Sections are filled; review only after section gaps."
+    if "stale_report" in reasons:
+        return "Latest report check", "Find a newer report or keep it in latest-not-found."
+    if missing_sections and source_quality in {"full_text", "partial_text"}:
+        return "Parser backfill", "Re-parse existing full or partial body text."
+    if "low_confidence" in reasons:
+        return "Confidence review", "Review confidence and source evidence."
+    return "Manual review", "Review after automated queues are cleared."
+
+
+def _research_supplement_need_html(item: dict[str, Any]) -> str:
+    ticker = html.escape(str(item.get("ticker") or ""))
+    name = html.escape(str(item.get("name") or ""))
+    status = html.escape(str(item.get("status") or ""))
+    latest = html.escape(str(item.get("latest_report_date") or "-"))
+    reasons = ", ".join(str(reason) for reason in item.get("reasons", [])) or "-"
+    missing = ", ".join(str(section) for section in item.get("missing_sections", [])) or "-"
+    source_quality = _source_quality_label(item.get("source_quality"))
+    source_quality_display = html.escape(source_quality or "-")
+    confidence = _to_float(item.get("confidence"))
+    return f"""
+    <div class="research-card">
+      <div class="head">
+        <div>
+          <div class="meta">Supplement Need · latest {latest} · confidence {confidence:.2f} · {source_quality_display}</div>
+          <div class="title">{ticker} · {name}</div>
+        </div>
+        <div class="pill">{status}</div>
+      </div>
+      <div class="research-grid">
+        <div class="research-cell"><b>Reasons</b>{html.escape(reasons)}</div>
+        <div class="research-cell"><b>Missing sections</b>{html.escape(missing)}</div>
+      </div>
+    </div>
+    """
+
+
+def _first_report_text(*values: object) -> str:
+    fragments = _clean_report_fragments(*values)
+    return fragments[0] if fragments else ""
+
+
+def _clean_report_fragments(*values: object) -> list[str]:
+    fragments: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        text = _strip_summary_prefix(text)
+        for part in text.split(" / "):
+            cleaned = _clean_report_fragment(part)
+            if cleaned and cleaned not in fragments and not _is_report_display_noise(cleaned):
+                fragments.append(cleaned)
+    return fragments
+
+
+def _strip_summary_prefix(text: str) -> str:
+    marker = "핵심 근거:"
+    if marker in text:
+        return text.split(marker, 1)[1].strip()
+    return text
+
+
+def _clean_report_fragment(text: str) -> str:
+    cleaned = " ".join(str(text or "").replace("\n", " ").split())
+    cleaned = cleaned.strip(" -·ㆍ,;:")
+    cleaned = cleaned.replace("Company Brief", "").strip()
+    cleaned = cleaned.lstrip("■▪●◆□- ").strip()
+    cleaned = re.sub(r"^\[[^\]]+\]\s*", "", cleaned).strip()
+    cleaned = re.sub(r"^\d{6}:\s*", "", cleaned).strip()
+    cleaned = re.sub(r"^[가-힣A-Za-z&.\s]+?\(\d{6}/[^)]*\)", "", cleaned).strip()
+    return cleaned
+
+
+def _is_report_display_noise(text: str) -> bool:
+    if len(text) < 5:
+        return True
+    if _looks_like_cut_report_fragment(text):
+        return True
+    if any(term in text for term in REPORT_PLACEHOLDER_TERMS):
+        return True
+    if any(term in text for term in REPORT_NOISE_TERMS):
+        return True
+    numeric_tokens = [token for token in text.split() if any(ch.isdigit() for ch in token)]
+    table_terms = (
+        "매출액",
+        "매출총이익",
+        "영업이익",
+        "매출원가",
+        "영업이익률",
+        "순이익",
+        "PER",
+        "PBR",
+    )
+    if re.match(r"^목표(?:가격|주가)\s*[\d,]+", text):
+        return True
+    if len(numeric_tokens) >= 3 and any(term in text for term in ("순이익", "수익성", "자산감소", "지분율")):
+        return True
+    if len(numeric_tokens) >= 2 and text.endswith(("를", "을", "로", "에", "의")):
+        return True
+    if len(numeric_tokens) >= 5 and any(term in text for term in table_terms):
+        return True
+    return len(numeric_tokens) >= 6
+
+
+def _looks_like_cut_report_fragment(text: str) -> bool:
+    stripped = text.strip()
+    cut_starts = ("인의 ", "로 ", "대비 ", "및 ")
+    if stripped.startswith("비 부담"):
+        return True
+    if any(stripped.startswith(start) for start in cut_starts):
+        return True
+    if stripped.count("(") > stripped.count(")"):
+        return True
+    cut_endings = (
+        " 허브",
+        " 거",
+        " 전년",
+        " 매",
+        " OPM",
+        "억원(",
+        "투자와 단가",
+        "이익 성과를",
+        "해외 현지",
+        "신규",
+        "에 부",
+        "달성하",
+        "투자포인트는",
+        "존재하",
+    )
+    if any(stripped.endswith(ending) for ending in cut_endings):
+        return True
+    numeric_tokens = [token for token in stripped.split() if any(ch.isdigit() for ch in token)]
+    return bool(numeric_tokens and re.search(r"\d+\s*(조|억|원|%)$", stripped))
+
+
+def _section_or_empty(text: str, empty_text: str) -> str:
+    if text:
+        return html.escape(text)
+    return f"<span class='empty'>{html.escape(empty_text)}</span>"
+
+
+def _research_brief_items(
+    *,
+    core: str,
+    growth: str,
+    new_business: str,
+    earnings: str,
+    valuation: str,
+    risk: str,
+) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    if core:
+        items.append(("핵심", core))
+    if growth:
+        items.append(("업황/성장", growth))
+    if new_business:
+        items.append(("신사업", new_business))
+    if earnings:
+        items.append(("실적", earnings))
+    elif valuation:
+        items.append(("밸류/목표가", valuation))
+    if risk:
+        items.append(("리스크", risk))
+    return items[:4]
 
 
 def _install_browser_auto_refresh(st, interval_seconds: int) -> None:

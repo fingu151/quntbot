@@ -59,20 +59,98 @@ report metadata plus compact body-analysis summaries for agent review. It must
 not place orders or bypass PAPER dry-run/readiness gates.
 
 ```powershell
-# Hankyung consensus metadata + body-analysis attempt.
-.\venv\Scripts\python.exe scripts\sync_korean_research_reports.py --url https://markets.hankyung.com/consensus --source hankyung_consensus --broker "한경 컨센서스" --include-pdf-text
+# Hankyung consensus metadata + PDF body analysis.
+.\venv\Scripts\python.exe scripts\sync_korean_research_reports.py --url https://consensus.hankyung.com/ --source hankyung_consensus --broker "한경 컨센서스" --include-pdf-text --pages 15 --start-date 2026-01-01 --end-date 2026-01-31
 
 # Mirae Asset research metadata + PDF body analysis.
-.\venv\Scripts\python.exe scripts\sync_korean_research_reports.py --url https://securities.miraeasset.com/bbs/board/message/list.do?categoryId=1533 --source mirae_asset --broker "미래에셋증권" --include-pdf-text
+# Use --pages N to collect multiple public list pages.
+.\venv\Scripts\python.exe scripts\sync_korean_research_reports.py --url https://securities.miraeasset.com/bbs/board/message/list.do?categoryId=1533 --source mirae_asset --broker "미래에셋증권" --include-pdf-text --pages 2
+
+# Mirae Asset 2026 YTD collection should be run in date chunks because broad
+# provider searches return a capped recent slice.
+.\venv\Scripts\python.exe scripts\sync_korean_research_reports.py --url https://securities.miraeasset.com/bbs/board/message/list.do?categoryId=1533 --source mirae_asset --broker "미래에셋증권" --include-pdf-text --pages 80 --start-date 2026-01-01 --end-date 2026-01-31
+
+# Re-analyze already stored Mirae Asset report rows with the current rule-v1 analyzer.
+.\venv\Scripts\python.exe scripts\reanalyze_research_report_bodies.py --source mirae_asset --broker "미래에셋증권"
+
+# Generate a human-readable Mirae Asset research summary Markdown report.
+.\venv\Scripts\python.exe scripts\generate_mirae_research_summary.py --output data\mirae_research_summary_latest.md --limit 1000
+
+# Compare factor rankings with and without Mirae Asset research overlay.
+.\venv\Scripts\python.exe scripts\compare_research_report_factor_impact.py --as-of-date 2026-05-14 --research-start-date 2026-01-01 --top-n 100
+
+# One-command Mirae Asset read-only research pipeline:
+# collect metadata/PDF text, reanalyze bodies, refresh summary, refresh factor impact.
+.\venv\Scripts\python.exe scripts\run_mirae_research_readonly_pipeline.py --start-date 2026-01-01 --as-of-date 2026-05-14 --pages 80 --limit 1000 --top-n 100
+
+# One-command Hankyung consensus read-only research pipeline:
+# collect public metadata, attempt linked PDF body text, refresh summary, refresh factor impact.
+.\venv\Scripts\python.exe scripts\run_hankyung_research_readonly_pipeline.py --start-date 2026-01-01 --end-date 2026-05-14 --as-of-date 2026-05-14 --pages 60 --limit 3000 --top-n 100
+
+# Discover usable public URLs from supplemental candidate searches and write
+# an ingest-ready draft. This is read-only market-intel work and submits no
+# orders. Provider list pages are checked for reachability only; unrelated list
+# PDFs are not promoted into the draft.
+.\venv\Scripts\python.exe -m scripts.discover_supplemental_research_sources --candidates data\supplemental_source_candidates.json --discovery-output data\supplemental_source_discovery_results.json --source-draft-output data\supplemental_research_sources_draft.json --max-candidates 112 --max-urls-per-candidate 8 --report-date 2026-05-16
+
+# Verify discovered PDF candidates by fetching text and requiring the ticker in
+# the body before ingest. This prevents search-result false positives.
+.\venv\Scripts\python.exe -m scripts.verify_supplemental_research_sources --input data\supplemental_research_sources_draft.json --verified-output data\supplemental_research_sources_verified.json --rejected-output data\supplemental_research_sources_rejected.json
+
+# Ingest only verified supplemental sources.
+.\venv\Scripts\python.exe -m scripts.ingest_supplemental_research_sources --input data\supplemental_research_sources_verified.json
+
+# One-command dashboard artifact refresh with supplemental discovery enabled.
+# This can call public search/PDF URLs, verifies ticker text before ingest, and
+# still submits no orders.
+.\venv\Scripts\python.exe -m scripts.refresh_public_dashboard_artifacts --refreshed-through 2026-05-15 --include-supplemental-discovery
 ```
 
 Current verified provider behavior:
-- Hankyung consensus stores metadata and analysis rows, but linked report PDFs
-  redirect to a login flow in this environment. Those analysis rows should show
-  `body_text_status=login_required`.
+- Hankyung must use `https://consensus.hankyung.com/`, not
+  `https://markets.hankyung.com/consensus`. The working PDF path is
+  `/analysis/downpdf?report_idx=...`.
+- Hankyung blocks Python's default requests user-agent with `Block access. 0001`,
+  but serves PDFs with a browser-style user-agent. The reader sends a browser
+  user-agent for list and PDF fetches.
+- Latest Hankyung 2026 YTD collection stored `2012` rows dated `2026-01-02` to
+  `2026-05-14`; body statuses are `extracted=2010`, `empty=2`.
+- Latest Hankyung factor-impact report wrote
+  `data\hankyung_research_factor_impact_latest.md`: `score_count=198`,
+  `research_signal_count=478`, `impacted_count=131`.
 - Mirae Asset category `1533` stores metadata and extracts linked PDFs. Latest
-  smoke stored 10 rows with `pdf_text_extracted=10`.
+  multi-page smoke used `--pages 2` and stored 20 rows with
+  `pdf_text_extracted=20`.
+- Latest read-only pipeline verification used `venv\Scripts\python.exe` with
+  `pypdf 5.1.0`: `pdf_text_attempted=323`, `pdf_text_extracted=323`,
+  `pdf_text_length=1020335`, `analysis_success_count=323`.
+- Latest factor-impact report wrote
+  `data\mirae_research_factor_impact_latest.md`: `score_count=198`,
+  `research_signal_count=115`, `impacted_count=48`.
+- Latest 2026 YTD Mirae collection was run in monthly chunks:
+  `2026-01=70`, `2026-02=95`, `2026-03=36`, `2026-04=63`,
+  `2026-05=59`, total `323` reports, all `body_text_status=extracted`.
 - Every sync command prints `orders_submitted=0`.
+- Latest supplemental discovery replaced Google web search URLs with Bing/Naver
+  web-search URLs and checked `112` candidates / `896` URLs:
+  `usable_source_count=5`, `source_draft_count=5`, `orders_submitted=0`.
+  Status counts were `reference_url_reachable=111`,
+  `provider_list_reachable=224`, `reachable_html=556`,
+  `search_result_pdf_found=4`, `fetch_failed=1`.
+- Latest supplemental source verification fetched the 5 draft PDFs and required
+  the ticker in extracted body text: `verified_count=1`, `rejected_count=4`.
+  The verified row was ticker `042520`, report date `2026-04-09`, source
+  `yuanta_pdf_naver`; rejected rows had `ticker_not_found_in_body`.
+- Ingesting `data\supplemental_research_sources_verified.json` stored
+  `signal_rows=1`, `analysis_rows=1`, `brief_rows=1`, `orders_submitted=0`.
+  Refreshing ticker briefs then moved `complete_count` from `406` to `407` and
+  `needs_review_count` from `112` to `111`.
+- `scripts.refresh_public_dashboard_artifacts` now supports
+  `--include-supplemental-discovery`. When enabled, it runs
+  export candidates -> discover URLs -> verify ticker text -> ingest verified
+  sources -> rebuild ticker briefs/queues/candidates before writing the QA
+  sample. The PowerShell refresh loop also accepts
+  `-IncludeSupplementalDiscovery`.
 
 Relevant files:
 - `src\signals\research_report_analysis.py`
@@ -81,10 +159,26 @@ Relevant files:
 - `src\data\models.py`
 - `src\data\repositories.py`
 - `scripts\sync_korean_research_reports.py`
+- `scripts\reanalyze_research_report_bodies.py`
+- `scripts\generate_mirae_research_summary.py`
+- `scripts\compare_research_report_factor_impact.py`
+- `scripts\run_mirae_research_readonly_pipeline.py`
+- `scripts\run_hankyung_research_readonly_pipeline.py`
+- `scripts\discover_supplemental_research_sources.py`
 - `tests\signals\test_research_report_analysis.py`
 - `tests\signals\test_research_report_parser.py`
 - `tests\signals\test_research_report_reader.py`
 - `tests\signals\test_sync_korean_research_reports.py`
+- `tests\signals\test_reanalyze_research_report_bodies.py`
+- `tests\signals\test_generate_mirae_research_summary.py`
+- `tests\signals\test_run_mirae_research_readonly_pipeline.py`
+- `tests\signals\test_run_hankyung_research_readonly_pipeline.py`
+- `tests\signals\test_discover_supplemental_research_sources.py`
+- `tests\factors\test_compare_research_report_factor_impact.py`
+- `data\mirae_research_summary_latest.md`
+- `data\mirae_research_factor_impact_latest.md`
+- `data\hankyung_research_summary_latest.md`
+- `data\hankyung_research_factor_impact_latest.md`
 - `docs\superpowers\specs\2026-05-14-research-report-body-analysis-design.md`
 - `docs\superpowers\plans\2026-05-14-research-report-body-analysis.md`
 

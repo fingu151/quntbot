@@ -125,7 +125,7 @@ class ResearchReportConfig:
     )
     source: str = os.getenv("RESEARCH_REPORT_SOURCE", "hankyung_consensus")
     broker: str = os.getenv("RESEARCH_REPORT_BROKER", "한경 컨센서스")
-    url: str = os.getenv("RESEARCH_REPORT_URL", "https://markets.hankyung.com/consensus")
+    url: str = os.getenv("RESEARCH_REPORT_URL", "https://consensus.hankyung.com/")
     poll_start_hour: int = int(os.getenv("RESEARCH_REPORT_POLL_START_HOUR", "6"))
     poll_end_hour: int = int(os.getenv("RESEARCH_REPORT_POLL_END_HOUR", "9"))
 

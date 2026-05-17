@@ -124,6 +124,18 @@ def parse_korean_research_reports(
             )
         }
     )
+    parsed_reports.update(
+        {
+            (report.report_date, report.ticker, report.title): report
+            for report in _parse_hankyung_consensus_downpdf_reports(
+                html,
+                source=source,
+                broker=broker,
+                base_url=base_url,
+                region=region,
+            )
+        }
+    )
 
     parser = _LinkTextExtractor()
     parser.feed(html)
@@ -137,6 +149,10 @@ def parse_korean_research_reports(
             or "document.write" in text
             or "nv.Popup.open" in text
             or "nv.Popup.open" in href_text
+            or "javascript:view" in href_text
+            or "downConfirm" in text
+            or "downConfirm" in href_text
+            or "analysis/downpdf" in href_text
         ):
             continue
         parsed = parse_korean_research_report_text(
@@ -432,6 +448,70 @@ def _parse_miraeasset_table_reports(
             )
         )
     return reports
+
+
+def _parse_hankyung_consensus_downpdf_reports(
+    html: str,
+    *,
+    source: str,
+    broker: str | None,
+    base_url: str | None,
+    region: str,
+) -> list[ParsedResearchReport]:
+    if "analysis/downpdf?report_idx=" not in html:
+        return []
+
+    reports = []
+    row_pattern = re.compile(r"<tr[^>]*>(?P<row>.*?)</tr>", flags=re.DOTALL | re.IGNORECASE)
+    title_pattern = re.compile(
+        r'<a\s+href="(?P<href>[^"]*analysis/downpdf\?report_idx=\d+[^"]*)"[^>]*>'
+        r"(?P<title>.*?)</a>",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    for row_match in row_pattern.finditer(html):
+        row_text = row_match.group("row")
+        title_match = title_pattern.search(row_text)
+        if title_match is None:
+            continue
+        report_date = _extract_date(row_text)
+        title = _clean_html_text(title_match.group("title"))
+        ticker = _extract_ticker(title)
+        if report_date is None or ticker is None or not title:
+            continue
+        rating, rating_score = _extract_rating(title)
+        sentiment_score = _extract_sentiment_score(title)
+        raw_score = _combine_report_score(
+            rating_score=rating_score,
+            target_price_change_pct=None,
+            sentiment_score=sentiment_score,
+        )
+        reports.append(
+            ParsedResearchReport(
+                report_date=report_date,
+                ticker=ticker,
+                source=source,
+                region=region,
+                broker=_extract_hankyung_consensus_broker(row_text) or broker,
+                rating=rating,
+                rating_score=rating_score,
+                target_price=None,
+                previous_target_price=None,
+                target_price_change_pct=None,
+                sentiment_score=sentiment_score,
+                raw_score=raw_score,
+                title=title,
+                source_url=urljoin(base_url, title_match.group("href")) if base_url else title_match.group("href"),
+            )
+        )
+    return reports
+
+
+def _extract_hankyung_consensus_broker(row_text: str) -> str | None:
+    cells = [_clean_html_text(cell) for cell in re.findall(r"<td[^>]*>(.*?)</td>", row_text, re.DOTALL | re.IGNORECASE)]
+    cells = [cell for cell in cells if cell and "report_idx=" not in cell and cell.upper() != "PDF"]
+    if len(cells) >= 5:
+        return cells[4]
+    return None
 
 
 def _nuxt_resolver(html: str) -> dict[str, object]:

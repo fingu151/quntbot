@@ -72,3 +72,134 @@ def test_analyze_research_report_body_handles_missing_body_as_low_confidence():
     assert analysis.confidence < 0.5
     assert analysis.body_text_status == "fetch_failed"
 
+
+def test_analyze_research_report_body_uses_title_context_when_pdf_body_is_sparse():
+    report = ParsedResearchReport(
+        report_date=date(2026, 5, 14),
+        ticker="000120",
+        source="mirae_asset",
+        region="domestic",
+        broker="미래에셋증권",
+        rating="Buy",
+        rating_score=0.6,
+        target_price=None,
+        previous_target_price=None,
+        target_price_change_pct=None,
+        sentiment_score=None,
+        raw_score=0.6,
+        title="CJ대한통운 (000120/매수)여전히 주목해야 할 시장 지위 확대",
+        source_url="https://example.test/report.pdf",
+    )
+
+    analysis = analyze_research_report_body(
+        report,
+        "Mirae Asset Securities Research 2026.5.13 시가총액 발행주식수 외국인 보유비중",
+        body_text_status="extracted",
+    )
+
+    assert "시장 지위 확대" in analysis.summary
+    assert "시장 지위 확대" in analysis.buy_thesis
+    assert "000120/매수" not in analysis.buy_thesis
+    assert analysis.investment_opinion == "positive"
+
+
+def test_analyze_research_report_body_does_not_copy_positive_title_into_risk_bucket():
+    report = ParsedResearchReport(
+        report_date=date(2026, 5, 14),
+        ticker="043150",
+        source="mirae_asset",
+        region="domestic",
+        broker="미래에셋증권",
+        rating="Buy",
+        rating_score=0.6,
+        target_price=None,
+        previous_target_price=None,
+        target_price_change_pct=None,
+        sentiment_score=None,
+        raw_score=0.6,
+        title="바텍 (043150/매수)원가 압박 이겨내는 중",
+        source_url="https://example.test/report.pdf",
+    )
+
+    analysis = analyze_research_report_body(
+        report,
+        "",
+        body_text_status="extracted",
+    )
+
+    assert analysis.buy_thesis == "원가 압박 이겨내는 중"
+    assert analysis.risk_factors == ""
+
+
+def test_analyze_research_report_body_uses_buy_rating_for_title_fallback_when_raw_score_is_zero():
+    report = ParsedResearchReport(
+        report_date=date(2026, 5, 14),
+        ticker="004170",
+        source="mirae_asset",
+        region="domestic",
+        broker="미래에셋증권",
+        rating="Buy",
+        rating_score=0.6,
+        target_price=None,
+        previous_target_price=None,
+        target_price_change_pct=None,
+        sentiment_score=None,
+        raw_score=0.0,
+        title="신세계 (004170/매수)만점짜리 실적",
+        source_url="https://example.test/report.pdf",
+    )
+
+    analysis = analyze_research_report_body(report, "", body_text_status="extracted")
+
+    assert analysis.investment_opinion == "positive"
+    assert analysis.buy_thesis == "만점짜리 실적"
+    assert "만점짜리 실적" in analysis.summary
+
+
+def test_analyze_research_report_body_ignores_mirae_rating_definition_boilerplate():
+    body = """
+    투자의견 '매수' 유지, 목표주가 400,000원으로 상향.
+    리니지 클래식 매출 호조를 반영한 26F 실적 조정으로 목표주가를 280,000원에서 400,000원으로 상향한다.
+    매수 : 향후 12개월 기준 절대수익률 20% 이상의 초과수익 예상 비중확대 : 향후 12개월 기준 업종지수상승률이 시장수익률 대비 높거나 상승.
+    지표준수주주행동 매출원가 0 0 0 0 현금 및 현금성자산 504 1,292 1,730 2,146.
+    """
+
+    analysis = analyze_research_report_body(
+        _report(),
+        body,
+        body_text_status="extracted",
+    )
+
+    assert "절대수익률 20%" not in analysis.buy_thesis
+    assert "현금 및 현금성자산" not in analysis.risk_factors
+    assert "목표주가 400,000원으로 상향" in analysis.summary
+def test_analyze_research_report_body_ignores_display_noise_rows():
+    body = """
+    Analyst Name 02-1234-5678 E-mail analyst@example.com
+    투자등급 매수 중립(보유) 매도 유니버스 투자등급 비율
+    매출액 1,000 2,000 3,000 4,000 5,000 영업이익 100 200 300
+    AI 서버 수요 확대로 고부가 제품 판매가 증가하고 있다.
+    환율 변동과 원가 부담은 단기 리스크로 남아 있다.
+    """
+
+    analysis = analyze_research_report_body(
+        _report(),
+        body,
+        body_text_status="extracted",
+    )
+
+    combined = " ".join(
+        [
+            analysis.summary,
+            analysis.buy_thesis,
+            analysis.growth_drivers,
+            analysis.earnings_drivers,
+            analysis.risk_factors,
+            analysis.sell_or_risk_thesis,
+        ]
+    )
+
+    assert "analyst@example.com" not in combined
+    assert "투자등급 매수 중립" not in combined
+    assert "매출액 1,000 2,000" not in combined
+    assert "AI 서버 수요" in combined

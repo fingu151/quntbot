@@ -204,3 +204,40 @@ def test_parse_korean_research_reports_reads_miraeasset_current_table_rows():
     assert report.source_url == (
         "https://securities.miraeasset.com/bbs/download/2144597.pdf?attachmentId=2144597"
     )
+
+
+def test_parse_korean_research_reports_reads_hankyung_consensus_downpdf_rows():
+    html = """
+<table>
+  <tr class="first">
+    <td class="first txt_number">2026-05-14</td>
+    <td>기업</td>
+    <td class="text_l">
+      <a href="/analysis/downpdf?report_idx=649357" target="_blank">
+        HMM(011200) 1Q26 Review: 전쟁 효과는 2Q부터
+      </a>
+      <div class="layerPop"><strong>HMM(011200) 1Q26 Review: 전쟁 효과는 2Q부터</strong></div>
+    </td>
+    <td>이서연</td>
+    <td>상상인증권</td>
+    <td><a href="/analysis/downpdf?report_idx=649357" title="CM0079_4434_1.pdf">PDF</a></td>
+  </tr>
+</table>
+"""
+
+    reports = parse_korean_research_reports(
+        html,
+        source="hankyung_consensus",
+        broker="한경 컨센서스",
+        base_url="https://consensus.hankyung.com/",
+    )
+
+    assert len(reports) == 1
+    report = reports[0]
+    assert report.report_date == date(2026, 5, 14)
+    assert report.ticker == "011200"
+    assert report.broker == "상상인증권"
+    assert report.title == "HMM(011200) 1Q26 Review: 전쟁 효과는 2Q부터"
+    assert report.source_url == (
+        "https://consensus.hankyung.com/analysis/downpdf?report_idx=649357"
+    )

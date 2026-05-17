@@ -47,6 +47,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--database-url", default=DATABASE_URL)
     parser.add_argument("--as-of-date", type=_parse_date, default=None)
+    parser.add_argument(
+        "--fallback-existing-snapshot",
+        action="store_true",
+        help=(
+            "If KIS holdings cannot be loaded, reuse positions from the existing "
+            "public snapshot and mark the snapshot with a warning."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -56,7 +64,20 @@ def run(
     holdings_provider: SnapshotHoldingProvider | None = None,
 ) -> int:
     provider = holdings_provider or _load_kis_holdings
-    holdings = provider()
+    fallback_warning = ""
+    try:
+        holdings = provider()
+        holdings_source = "kis_paper"
+        kis_called_by_snapshot = True
+    except Exception as exc:
+        if not getattr(args, "fallback_existing_snapshot", False):
+            raise
+        holdings = _load_holdings_from_existing_snapshot(args.output)
+        if not holdings:
+            raise
+        holdings_source = "previous_public_snapshot"
+        kis_called_by_snapshot = False
+        fallback_warning = f"kis_holdings_unavailable_reused_previous_snapshot:{type(exc).__name__}"
     tickers = [str(row.get("ticker", "")) for row in holdings if row.get("ticker")]
     dry_run = load_json_file(args.dry_run_json)
     execution_path = args.execution_report_json or find_latest_execution_report(DATA_DIR)
@@ -74,6 +95,10 @@ def run(
         market_context=market_context,
         factor_details=factor_details,
     )
+    snapshot["source"]["holdings"] = holdings_source
+    snapshot["source"]["kis_called_by_snapshot"] = kis_called_by_snapshot
+    if fallback_warning:
+        snapshot.setdefault("warnings", []).append(fallback_warning)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(snapshot, ensure_ascii=False, indent=2),
@@ -182,6 +207,26 @@ def load_json_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_holdings_from_existing_snapshot(path: Path) -> list[dict[str, Any]]:
+    snapshot = load_json_file(path)
+    holdings: list[dict[str, Any]] = []
+    for position in snapshot.get("positions") or []:
+        if not isinstance(position, dict) or not position.get("ticker"):
+            continue
+        holdings.append(
+            {
+                "ticker": position.get("ticker"),
+                "name": position.get("name", ""),
+                "qty": position.get("qty", 0),
+                "avg_price": position.get("avg_price", 0),
+                "current_price": position.get("current_price", 0),
+                "eval_profit_loss": position.get("profit_loss", 0),
+                "profit_loss_rate": position.get("profit_loss_rate", 0),
+            }
+        )
+    return holdings
 
 
 def find_latest_execution_report(data_dir: Path) -> Path | None:

@@ -102,6 +102,10 @@ _BUCKET_KEYWORDS: dict[str, tuple[str, ...]] = {
         "추정치",
     ),
     "risk_factors": (
+        "risk",
+        "uncertainty",
+        "execution speed",
+        "recovery timing",
         "리스크",
         "위험",
         "불확실",
@@ -125,8 +129,9 @@ def analyze_research_report_body(
 ) -> ResearchReportBodyAnalysis:
     raw_text = body_text or ""
     normalized = _normalize(raw_text)
-    sentences = _split_sentences(f"{report.title}. {raw_text}")
+    sentences = _split_sentences(raw_text)
     buckets = {name: _best_sentences(sentences, keywords) for name, keywords in _BUCKET_KEYWORDS.items()}
+    buckets = _apply_title_context(report, buckets)
     opinion = _infer_opinion(report, buckets)
     summary = _build_summary(report, buckets, opinion)
     evidence_terms = _evidence_terms(normalized, buckets)
@@ -162,7 +167,7 @@ def _split_sentences(text: str) -> list[str]:
         cleaned = _normalize(sentence).strip(" -•\t")
         if len(cleaned) < 8 or _is_report_boilerplate(cleaned):
             continue
-        sentences.append(_shorten(cleaned, limit=180))
+        sentences.append(_shorten(cleaned, limit=320))
     return sentences
 
 
@@ -182,6 +187,10 @@ def _infer_opinion(report: ParsedResearchReport, buckets: dict[str, str]) -> str
     if report.raw_score >= 0.35:
         return "positive"
     if report.raw_score <= -0.35:
+        return "negative"
+    if report.rating_score is not None and report.rating_score > 0:
+        return "positive"
+    if report.rating_score is not None and report.rating_score < 0:
         return "negative"
     has_positive = bool(buckets["buy_thesis"])
     has_negative = bool(buckets["sell_or_risk_thesis"] or buckets["risk_factors"])
@@ -205,7 +214,7 @@ def _build_summary(
     if thesis:
         return _shorten(
             f"{report.ticker} 리포트는 {opinion} 관점으로 해석됩니다. 핵심 근거: {thesis}",
-            limit=320,
+            limit=520,
         )
     if report.rating:
         return f"{report.ticker} 리포트는 투자의견 {report.rating}을 제시했지만 본문 근거 추출은 제한적입니다."
@@ -224,13 +233,81 @@ def _is_report_boilerplate(sentence: str) -> bool:
     boilerplate_terms = (
         "mirae asset securities research",
         "equity research",
+        "향후 12개월 기준",
+        "절대수익률 20%",
+        "비중확대 :",
+        "지표준수주주행동",
         "시가총액",
         "발행주식수",
         "외국인 보유비중",
+        "현금 및 현금성자산",
         "자료:",
         "결산기",
     )
-    return any(term in lowered for term in boilerplate_terms)
+    extra_boilerplate_terms = (
+        "Company Brief",
+        "Issue Comment",
+        "투자등급",
+        "매수 중립",
+        "중립(보유) 매도",
+        "Underperform",
+        "Neutral(중립)",
+        "유니버스 투자등급",
+        "본 자료에 수록된",
+        "영업이익/금융비용",
+        "매출원가율",
+        "수정주가",
+        "12MF PER",
+        "12MF PBR",
+        "E-mail",
+        "@",
+        "\uf06e",
+    )
+    if any(term in lowered for term in boilerplate_terms) or any(
+        term.lower() in lowered for term in extra_boilerplate_terms
+    ):
+        return True
+    numeric_tokens = re.findall(r"\d[\d,]*(?:\.\d+)?", sentence)
+    table_terms = ("매출액", "영업이익", "매출원가", "영업이익률", "PER", "PBR")
+    if len(numeric_tokens) >= 5 and any(term in sentence for term in table_terms):
+        return True
+    return len(numeric_tokens) >= 8
+
+
+def _apply_title_context(
+    report: ParsedResearchReport,
+    buckets: dict[str, str],
+) -> dict[str, str]:
+    context = _title_context(report.title)
+    if not context:
+        return buckets
+    updated = dict(buckets)
+    positive_view = report.raw_score > 0 or (report.rating_score is not None and report.rating_score > 0)
+    negative_view = report.raw_score < 0 or (report.rating_score is not None and report.rating_score < 0)
+    if positive_view and not updated["buy_thesis"]:
+        updated["buy_thesis"] = context
+    elif negative_view and not updated["sell_or_risk_thesis"]:
+        updated["sell_or_risk_thesis"] = context
+    for bucket_name, keywords in _BUCKET_KEYWORDS.items():
+        if updated[bucket_name]:
+            continue
+        if positive_view and bucket_name in {"sell_or_risk_thesis", "risk_factors"}:
+            continue
+        if negative_view and bucket_name == "buy_thesis":
+            continue
+        lowered = context.lower()
+        if any(keyword.lower() in lowered for keyword in keywords):
+            updated[bucket_name] = context
+    return updated
+
+
+def _title_context(title: str) -> str:
+    cleaned = _normalize(title)
+    cleaned = re.sub(r"^.*?\(\d{6}/[^)]*\)", "", cleaned).strip()
+    cleaned = cleaned.strip(" :-")
+    if len(cleaned) < 4:
+        return ""
+    return _shorten(cleaned, limit=180)
 
 
 def _evidence_terms(text: str, buckets: dict[str, str]) -> str:
