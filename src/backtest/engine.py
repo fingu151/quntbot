@@ -190,7 +190,7 @@ def run_backtest(
             if entry_date is not None:
                 held_trading_days = max(
                     0,
-                    trading_day_index_by_date[trading_date] - trading_day_index_by_date[entry_date] - 1,
+                    trading_day_index_by_date[trading_date] - trading_day_index_by_date[entry_date],
                 )
             if (
                 ticker not in keep_tickers

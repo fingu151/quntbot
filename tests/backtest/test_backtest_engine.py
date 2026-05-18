@@ -700,7 +700,7 @@ def test_rebalance_min_holding_blocks_early_rebalance_sell():
     )
 
     sells = [trade for trade in result.trades if trade.side == "SELL" and trade.reason == "rebalance"]
-    assert sells[0].date >= date(2026, 1, 5)
+    assert sells[0].date == date(2026, 1, 4)
 
 
 def test_run_backtest_score_weighted_allocation_uses_target_scores():
