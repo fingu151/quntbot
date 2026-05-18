@@ -28,6 +28,7 @@ from src.factors.engine import (
     calculate_factor_scores_from_df,
 )
 from src.factors.models import FactorScore
+from src.trading.allocation import compute_score_weights
 from src.trading.rebalancer import is_execution_gap_too_large
 
 
@@ -51,6 +52,14 @@ def run_backtest(
     trailing_stop_pct: float = EXIT_RULES.trailing_stop_pct,
     stop_cooldown_days: int = EXIT_RULES.stop_cooldown_days,
     rebalance_frequency: str = REBALANCE.frequency,
+    profit_take_pct: float = EXIT_RULES.profit_take_pct,
+    profit_take_sell_fraction: float = EXIT_RULES.profit_take_sell_fraction,
+    breakeven_stop_pct: float = EXIT_RULES.breakeven_stop_pct,
+    sell_rank_buffer: int = REBALANCE.sell_rank_buffer,
+    min_holding_trading_days: int = REBALANCE.min_holding_trading_days,
+    weighting: str = PORTFOLIO.weighting,
+    min_position_weight: float = PORTFOLIO.min_position_weight,
+    max_position_weight: float = PORTFOLIO.max_position_weight,
 ) -> BacktestResult:
     # 기본 스코어러는 날짜마다 DB를 재쿼리해서 매우 느림.
     # 벌크 로딩 클로저로 교체하면 동일한 결과를 훨씬 빠르게 얻음.
@@ -76,13 +85,17 @@ def run_backtest(
     entry_prices: dict[str, float] = {}
     peak_prices: dict[str, float] = {}
     cooldown_until: dict[str, date] = {}
-    pending_stops: list[tuple[str, str]] = []
+    pending_exits: list[tuple[str, str, float | None]] = []
+    profit_taken: set[str] = set()
+    trailing_bucket_qty: dict[str, float] = {}
+    breakeven_bucket_qty: dict[str, float] = {}
     trades: list[BacktestTrade] = []
     closed_trade_returns: list[float] = []
     closed_holding_days: list[int] = []
     equity_curve: list[EquityPoint] = []
     last_rebalance_key: tuple[int, ...] | None = None
     previous_trading_date: date | None = None
+    trading_day_index_by_date = {value: idx for idx, value in enumerate(trading_dates)}
 
     for trading_date in trading_dates:
         today_prices = prices_by_date[trading_date]
@@ -92,62 +105,69 @@ def run_backtest(
             continue
 
         forbidden_today: set[str] = set()
-        if enable_stops and pending_stops:
-            for ticker, reason in pending_stops:
+        if enable_stops and pending_exits:
+            remaining_pending: list[tuple[str, str, float | None]] = []
+            for ticker, reason, pending_quantity in pending_exits:
                 if ticker not in positions or ticker not in today_prices:
+                    remaining_pending.append((ticker, reason, pending_quantity))
                     continue
+                current_quantity = positions[ticker]
+                quantity = current_quantity if pending_quantity is None else min(pending_quantity, current_quantity)
+                if quantity <= 0:
+                    continue
+                entry_value = entry_prices.get(ticker, 0.0) * quantity
                 cash, trade, trade_return, holding_days = _sell_position(
                     ticker=ticker,
-                    quantity=positions.pop(ticker),
+                    quantity=quantity,
                     price=today_prices[ticker]["open"],
                     trade_date=trading_date,
                     cash=cash,
                     market=markets.get(ticker, ""),
-                    entry_date=entry_dates.pop(ticker),
-                    entry_value=entry_values.pop(ticker),
+                    entry_date=entry_dates[ticker],
+                    entry_value=entry_value,
                     commission_rate=commission_rate,
                     tax_rate_kospi=tax_rate_kospi,
                     tax_rate_kosdaq=tax_rate_kosdaq,
                     slippage_rate=slippage_rate,
                     reason=reason,
                 )
-                entry_prices.pop(ticker, None)
-                peak_prices.pop(ticker, None)
                 trades.append(trade)
                 closed_trade_returns.append(trade_return)
                 closed_holding_days.append(holding_days)
                 forbidden_today.add(ticker)
-                if stop_cooldown_days > 0:
+                remaining_quantity = current_quantity - quantity
+                if remaining_quantity <= 1e-9:
+                    positions.pop(ticker, None)
+                    entry_dates.pop(ticker, None)
+                    entry_values.pop(ticker, None)
+                    entry_prices.pop(ticker, None)
+                    peak_prices.pop(ticker, None)
+                    profit_taken.discard(ticker)
+                    trailing_bucket_qty.pop(ticker, None)
+                    breakeven_bucket_qty.pop(ticker, None)
+                else:
+                    positions[ticker] = remaining_quantity
+                    entry_values[ticker] = max(
+                        0.0,
+                        entry_values.get(ticker, 0.0) - entry_value,
+                    )
+                if pending_quantity is None and stop_cooldown_days > 0:
                     cooldown_until[ticker] = trading_date + timedelta(days=stop_cooldown_days)
-            pending_stops.clear()
-
-        if enable_stops:
-            for ticker in list(positions):
-                if ticker not in close_prices:
-                    continue
-                close = close_prices[ticker]
-                peak_prices[ticker] = max(peak_prices.get(ticker, close), close)
-                entry = entry_prices.get(ticker)
-                if entry is None:
-                    continue
-                loss_from_entry = (close / entry) - 1.0
-                loss_from_peak = (close / peak_prices[ticker]) - 1.0
-                if loss_from_entry <= stop_loss_pct:
-                    pending_stops.append((ticker, "stop_loss"))
-                elif loss_from_peak <= trailing_stop_pct:
-                    pending_stops.append((ticker, "trailing_stop"))
+            pending_exits = remaining_pending
 
         rebalance_key = _rebalance_key(trading_date, rebalance_frequency)
         should_rebalance = not positions or rebalance_key != last_rebalance_key
         target_tickers = list(positions)
+        target_scores: list[FactorScore] = []
+        keep_tickers = set(target_tickers)
         if should_rebalance and previous_trading_date is not None:
             previous_close_prices = {
                 ticker: price["close"]
                 for ticker, price in prices_by_date[previous_trading_date].items()
             }
             scores = scoring_func(engine, as_of_date=previous_trading_date)
-            target_tickers = [
-                score.ticker
+            ranked_scores = [
+                score
                 for score in scores
                 if score.ticker in open_prices and score.ticker not in forbidden_today
                 and cooldown_until.get(score.ticker, date.min) < trading_date
@@ -156,12 +176,30 @@ def run_backtest(
                     previous_close=previous_close_prices.get(score.ticker),
                     max_abs_gap_pct=PORTFOLIO.max_abs_open_gap_pct,
                 )
-            ][:target_count]
+            ]
+            ranked_tickers = [score.ticker for score in ranked_scores]
+            target_scores = ranked_scores[:target_count]
+            target_tickers = ranked_tickers[:target_count]
+            keep_tickers = set(ranked_tickers[:max(target_count, sell_rank_buffer)])
             if target_tickers:
                 last_rebalance_key = rebalance_key
 
         for ticker in list(positions):
-            if ticker not in target_tickers and ticker in open_prices:
+            entry_date = entry_dates.get(ticker)
+            held_trading_days = 0
+            if entry_date is not None:
+                held_trading_days = max(
+                    0,
+                    trading_day_index_by_date[trading_date] - trading_day_index_by_date[entry_date] - 1,
+                )
+            if (
+                ticker not in keep_tickers
+                and ticker not in forbidden_today
+                and held_trading_days >= min_holding_trading_days
+                and ticker in open_prices
+            ):
+                quantity = positions[ticker]
+                entry_value = entry_prices.get(ticker, 0.0) * quantity
                 cash, trade, trade_return, holding_days = _sell_position(
                     ticker=ticker,
                     quantity=positions.pop(ticker),
@@ -170,7 +208,7 @@ def run_backtest(
                     cash=cash,
                     market=markets.get(ticker, ""),
                     entry_date=entry_dates.pop(ticker),
-                    entry_value=entry_values.pop(ticker),
+                    entry_value=entry_value,
                     commission_rate=commission_rate,
                     tax_rate_kospi=tax_rate_kospi,
                     tax_rate_kosdaq=tax_rate_kosdaq,
@@ -178,17 +216,32 @@ def run_backtest(
                     reason="rebalance",
                 )
                 entry_prices.pop(ticker, None)
+                entry_values.pop(ticker, None)
                 peak_prices.pop(ticker, None)
+                profit_taken.discard(ticker)
+                trailing_bucket_qty.pop(ticker, None)
+                breakeven_bucket_qty.pop(ticker, None)
                 trades.append(trade)
                 closed_trade_returns.append(trade_return)
                 closed_holding_days.append(holding_days)
 
         equity_before_buys = cash + _positions_value(positions, close_prices)
-        target_value = equity_before_buys / len(target_tickers) if target_tickers else 0.0
+        target_weights: dict[str, float] = {}
+        if weighting == "score_weighted" and target_scores:
+            target_weights = compute_score_weights(
+                [(score.ticker, score.total_score) for score in target_scores],
+                min_weight=min_position_weight,
+                max_weight=max_position_weight,
+            )
+        equal_target_value = equity_before_buys / len(target_tickers) if target_tickers else 0.0
         for ticker in target_tickers:
             if ticker in positions:
                 continue
             price = open_prices[ticker]
+            if target_weights:
+                target_value = equity_before_buys * target_weights.get(ticker, 0.0)
+            else:
+                target_value = equal_target_value
             quantity = target_value / price if price > 0 else 0.0
             gross_amount = quantity * price
             cost = gross_amount * (commission_rate + slippage_rate)
@@ -214,6 +267,38 @@ def run_backtest(
                 )
             )
 
+        if enable_stops:
+            for ticker in list(positions):
+                if ticker not in close_prices:
+                    continue
+                close = close_prices[ticker]
+                peak_prices[ticker] = max(peak_prices.get(ticker, close), close)
+                entry = entry_prices.get(ticker)
+                if entry is None:
+                    continue
+                return_from_entry = (close / entry) - 1.0
+                loss_from_peak = (close / peak_prices[ticker]) - 1.0
+                if ticker not in profit_taken:
+                    if return_from_entry <= stop_loss_pct:
+                        pending_exits.append((ticker, "stop_loss", None))
+                    elif return_from_entry >= profit_take_pct:
+                        sell_qty = positions[ticker] * profit_take_sell_fraction
+                        if sell_qty > 0:
+                            pending_exits.append((ticker, "profit_take_20", sell_qty))
+                            profit_taken.add(ticker)
+                            remaining_qty = positions[ticker] - sell_qty
+                            trailing_bucket_qty[ticker] = remaining_qty * 0.50
+                            breakeven_bucket_qty[ticker] = remaining_qty - trailing_bucket_qty[ticker]
+                else:
+                    trail_qty = trailing_bucket_qty.get(ticker, 0.0)
+                    breakeven_qty = breakeven_bucket_qty.get(ticker, 0.0)
+                    if trail_qty > 0 and loss_from_peak <= trailing_stop_pct:
+                        pending_exits.append((ticker, "post_profit_trailing_stop", trail_qty))
+                        trailing_bucket_qty[ticker] = 0.0
+                    if breakeven_qty > 0 and return_from_entry <= breakeven_stop_pct:
+                        pending_exits.append((ticker, "post_profit_breakeven_stop", breakeven_qty))
+                        breakeven_bucket_qty[ticker] = 0.0
+
         positions_value = _positions_value(positions, close_prices)
         equity_curve.append(
             EquityPoint(
@@ -225,30 +310,49 @@ def run_backtest(
         )
         previous_trading_date = trading_date
 
-    if enable_stops and pending_stops and trading_dates:
+    if enable_stops and pending_exits and trading_dates:
         last_date = trading_dates[-1]
         last_prices = prices_by_date[last_date]
-        for ticker, reason in pending_stops:
+        for ticker, reason, pending_quantity in pending_exits:
             if ticker not in positions or ticker not in last_prices:
                 continue
+            current_quantity = positions[ticker]
+            quantity = current_quantity if pending_quantity is None else min(pending_quantity, current_quantity)
+            if quantity <= 0:
+                continue
             fallback_reason = f"{reason}_close_fallback"
+            entry_value = entry_prices.get(ticker, 0.0) * quantity
             cash, trade, trade_return, holding_days = _sell_position(
                 ticker=ticker,
-                quantity=positions.pop(ticker),
+                quantity=quantity,
                 price=last_prices[ticker]["close"],
                 trade_date=last_date,
                 cash=cash,
                 market=markets.get(ticker, ""),
-                entry_date=entry_dates.pop(ticker),
-                entry_value=entry_values.pop(ticker),
+                entry_date=entry_dates[ticker],
+                entry_value=entry_value,
                 commission_rate=commission_rate,
                 tax_rate_kospi=tax_rate_kospi,
                 tax_rate_kosdaq=tax_rate_kosdaq,
                 slippage_rate=slippage_rate,
                 reason=fallback_reason,
             )
-            entry_prices.pop(ticker, None)
-            peak_prices.pop(ticker, None)
+            remaining_quantity = current_quantity - quantity
+            if remaining_quantity <= 1e-9:
+                positions.pop(ticker, None)
+                entry_dates.pop(ticker, None)
+                entry_values.pop(ticker, None)
+                entry_prices.pop(ticker, None)
+                peak_prices.pop(ticker, None)
+                profit_taken.discard(ticker)
+                trailing_bucket_qty.pop(ticker, None)
+                breakeven_bucket_qty.pop(ticker, None)
+            else:
+                positions[ticker] = remaining_quantity
+                entry_values[ticker] = max(
+                    0.0,
+                    entry_values.get(ticker, 0.0) - entry_value,
+                )
             trades.append(trade)
             closed_trade_returns.append(trade_return)
             closed_holding_days.append(holding_days)

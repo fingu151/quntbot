@@ -2,6 +2,7 @@ from datetime import date
 import subprocess
 import sys
 
+from scripts import run_backtest_matrix as matrix_script
 from scripts.run_phase3_backtest import parse_args, run
 from src.backtest.models import BacktestResult, BacktestTrade
 
@@ -57,6 +58,32 @@ def test_parse_args_accepts_stop_thresholds():
     assert args.stop_loss_pct == -0.05
     assert args.trailing_stop_pct == -0.07
     assert args.stop_cooldown_days == 3
+
+
+def test_parse_args_accepts_staged_exit_rebalance_and_weighting_options():
+    args = parse_args(
+        [
+            "--profit-take-pct",
+            "0.25",
+            "--profit-take-sell-fraction",
+            "0.40",
+            "--breakeven-stop-pct",
+            "-0.01",
+            "--sell-rank-buffer",
+            "25",
+            "--min-holding-trading-days",
+            "4",
+            "--weighting",
+            "equal",
+        ]
+    )
+
+    assert args.profit_take_pct == 0.25
+    assert args.profit_take_sell_fraction == 0.40
+    assert args.breakeven_stop_pct == -0.01
+    assert args.sell_rank_buffer == 25
+    assert args.min_holding_trading_days == 4
+    assert args.weighting == "equal"
 
 
 def test_parse_args_accepts_cost_overrides():
@@ -241,6 +268,53 @@ def test_run_passes_stop_thresholds_to_backtest():
     assert captured_kwargs["stop_cooldown_days"] == 3
 
 
+def test_run_passes_staged_exit_rebalance_and_weighting_options_to_backtest():
+    captured_kwargs = {}
+
+    def fake_run_backtest(engine, **kwargs):
+        captured_kwargs.update(kwargs)
+        return BacktestResult(
+            initial_capital=10_000,
+            final_equity=10_000,
+            total_return=0.0,
+            cagr=0.0,
+            max_drawdown=0.0,
+            sharpe_ratio=0.0,
+            win_rate=0.0,
+            average_holding_days=0.0,
+            trades=[],
+            equity_curve=[],
+        )
+
+    args = parse_args(
+        [
+            "--database-url",
+            "sqlite:///:memory:",
+            "--profit-take-pct",
+            "0.25",
+            "--profit-take-sell-fraction",
+            "0.40",
+            "--breakeven-stop-pct",
+            "-0.01",
+            "--sell-rank-buffer",
+            "25",
+            "--min-holding-trading-days",
+            "4",
+            "--weighting",
+            "equal",
+        ]
+    )
+
+    run(args, run_backtest_func=fake_run_backtest)
+
+    assert captured_kwargs["profit_take_pct"] == 0.25
+    assert captured_kwargs["profit_take_sell_fraction"] == 0.40
+    assert captured_kwargs["breakeven_stop_pct"] == -0.01
+    assert captured_kwargs["sell_rank_buffer"] == 25
+    assert captured_kwargs["min_holding_trading_days"] == 4
+    assert captured_kwargs["weighting"] == "equal"
+
+
 def test_run_passes_cost_overrides_to_backtest():
     captured_kwargs = {}
 
@@ -282,6 +356,80 @@ def test_run_passes_cost_overrides_to_backtest():
     assert captured_kwargs["slippage_rate"] == 0.004
 
 
+def test_matrix_parse_args_accepts_staged_exit_rebalance_and_weighting_options():
+    args = matrix_script.parse_args(
+        [
+            "--profit-take-pct",
+            "0.25",
+            "--profit-take-sell-fraction",
+            "0.40",
+            "--breakeven-stop-pct",
+            "-0.01",
+            "--sell-rank-buffer",
+            "25",
+            "--min-holding-trading-days",
+            "4",
+            "--weighting",
+            "equal",
+        ]
+    )
+
+    assert args.profit_take_pct == 0.25
+    assert args.profit_take_sell_fraction == 0.40
+    assert args.breakeven_stop_pct == -0.01
+    assert args.sell_rank_buffer == 25
+    assert args.min_holding_trading_days == 4
+    assert args.weighting == "equal"
+
+
+def test_matrix_run_passes_staged_exit_rebalance_and_weighting_options_to_backtest(capsys):
+    captured_kwargs = {}
+
+    def fake_run_backtest(engine, **kwargs):
+        captured_kwargs.update(kwargs)
+        return BacktestResult(
+            initial_capital=10_000,
+            final_equity=10_000,
+            total_return=0.0,
+            cagr=0.0,
+            max_drawdown=0.0,
+            sharpe_ratio=0.0,
+            win_rate=0.0,
+            average_holding_days=0.0,
+            trades=[],
+            equity_curve=[],
+        )
+
+    args = matrix_script.parse_args(
+        [
+            "--database-url",
+            "sqlite:///:memory:",
+            "--profit-take-pct",
+            "0.25",
+            "--profit-take-sell-fraction",
+            "0.40",
+            "--breakeven-stop-pct",
+            "-0.01",
+            "--sell-rank-buffer",
+            "25",
+            "--min-holding-trading-days",
+            "4",
+            "--weighting",
+            "equal",
+        ]
+    )
+
+    matrix_script.run(args, run_backtest_func=fake_run_backtest)
+    capsys.readouterr()
+
+    assert captured_kwargs["profit_take_pct"] == 0.25
+    assert captured_kwargs["profit_take_sell_fraction"] == 0.40
+    assert captured_kwargs["breakeven_stop_pct"] == -0.01
+    assert captured_kwargs["sell_rank_buffer"] == 25
+    assert captured_kwargs["min_holding_trading_days"] == 4
+    assert captured_kwargs["weighting"] == "equal"
+
+
 def test_script_can_be_executed_directly_with_help():
     completed = subprocess.run(
         [sys.executable, "scripts/run_phase3_backtest.py", "--help"],
@@ -297,5 +445,11 @@ def test_script_can_be_executed_directly_with_help():
     assert "--stop-loss-pct" in completed.stdout
     assert "--trailing-stop-pct" in completed.stdout
     assert "--stop-cooldown-days" in completed.stdout
+    assert "--profit-take-pct" in completed.stdout
+    assert "--profit-take-sell-fraction" in completed.stdout
+    assert "--breakeven-stop-pct" in completed.stdout
+    assert "--sell-rank-buffer" in completed.stdout
+    assert "--min-holding-trading-days" in completed.stdout
+    assert "--weighting" in completed.stdout
     assert "--commission-rate" in completed.stdout
     assert "--slippage-rate" in completed.stdout

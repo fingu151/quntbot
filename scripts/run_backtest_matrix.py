@@ -38,6 +38,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stop-loss-pct", type=float, default=EXIT_RULES.stop_loss_pct)
     parser.add_argument("--trailing-stop-pct", type=float, default=EXIT_RULES.trailing_stop_pct)
     parser.add_argument("--stop-cooldown-days", type=int, default=EXIT_RULES.stop_cooldown_days)
+    parser.add_argument("--profit-take-pct", type=float, default=EXIT_RULES.profit_take_pct)
+    parser.add_argument(
+        "--profit-take-sell-fraction",
+        type=float,
+        default=EXIT_RULES.profit_take_sell_fraction,
+    )
+    parser.add_argument("--breakeven-stop-pct", type=float, default=EXIT_RULES.breakeven_stop_pct)
+    parser.add_argument("--sell-rank-buffer", type=int, default=REBALANCE.sell_rank_buffer)
+    parser.add_argument(
+        "--min-holding-trading-days",
+        type=int,
+        default=REBALANCE.min_holding_trading_days,
+    )
+    parser.add_argument(
+        "--weighting",
+        choices=("equal", "score_weighted"),
+        default=PORTFOLIO.weighting,
+    )
     parser.add_argument("--commission-rate", type=float, default=COST.commission_rate)
     parser.add_argument("--tax-rate-kospi", type=float, default=COST.tax_rate_kospi)
     parser.add_argument("--tax-rate-kosdaq", type=float, default=COST.tax_rate_kosdaq)
@@ -53,6 +71,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--trailing-stop-pct must be negative")
     if args.stop_cooldown_days < 0:
         parser.error("--stop-cooldown-days must be zero or greater")
+    if args.profit_take_pct <= 0:
+        parser.error("--profit-take-pct must be positive")
+    if not 0 < args.profit_take_sell_fraction < 1:
+        parser.error("--profit-take-sell-fraction must be between 0 and 1")
+    if args.sell_rank_buffer <= 0:
+        parser.error("--sell-rank-buffer must be greater than 0")
+    if args.min_holding_trading_days < 0:
+        parser.error("--min-holding-trading-days must be zero or greater")
     for option_name in ("commission_rate", "tax_rate_kospi", "tax_rate_kosdaq", "slippage_rate"):
         if getattr(args, option_name) < 0:
             parser.error(f"--{option_name.replace('_', '-')} must be zero or greater")
@@ -94,6 +120,12 @@ def run(
                         stop_loss_pct=args.stop_loss_pct,
                         trailing_stop_pct=args.trailing_stop_pct,
                         stop_cooldown_days=args.stop_cooldown_days,
+                        profit_take_pct=args.profit_take_pct,
+                        profit_take_sell_fraction=args.profit_take_sell_fraction,
+                        breakeven_stop_pct=args.breakeven_stop_pct,
+                        sell_rank_buffer=args.sell_rank_buffer,
+                        min_holding_trading_days=args.min_holding_trading_days,
+                        weighting=args.weighting,
                     )
                     result_row = _result_row(top_n, frequency, cost_scenario, enable_stops, result)
                     result_rows.append(result_row)

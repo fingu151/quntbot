@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -87,6 +87,20 @@ def seed_single_stock_prices(engine, rows):
         )
 
 
+def seed_prices_for_tickers(engine, tickers, *, start: date, days: int, price: int) -> None:
+    with session_scope(engine) as session:
+        upsert_stocks(
+            session,
+            [{"ticker": ticker, "name": ticker, "market": "KOSPI"} for ticker in tickers],
+        )
+        rows = []
+        for offset in range(days):
+            price_date = start + timedelta(days=offset)
+            for ticker in tickers:
+                rows.append({"ticker": ticker, "date": price_date, "open": price, "close": price})
+        upsert_daily_prices(session, rows)
+
+
 def test_run_backtest_buys_top_ranked_stock_and_tracks_equity():
     engine = get_engine("sqlite:///:memory:")
     create_tables(engine)
@@ -105,6 +119,7 @@ def test_run_backtest_buys_top_ranked_stock_and_tracks_equity():
         slippage_rate=0.0,
         enable_stops=False,
         rebalance_frequency="daily",
+        weighting="equal",
     )
 
     assert result.final_equity == pytest.approx(10_909.0909090909)
@@ -138,6 +153,9 @@ def test_run_backtest_scores_previous_trading_day_and_executes_rebalance_at_open
         slippage_rate=0.0,
         enable_stops=False,
         rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
     )
 
     first_buy = next(trade for trade in result.trades if trade.side == "BUY")
@@ -170,6 +188,9 @@ def test_run_backtest_skips_new_buy_when_execution_open_gap_is_too_large():
         slippage_rate=0.0,
         enable_stops=False,
         rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
     )
 
     assert result.trades == []
@@ -193,6 +214,9 @@ def test_run_backtest_rebalances_when_top_rank_changes():
         slippage_rate=0.0,
         enable_stops=False,
         rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
     )
 
     trade_sides = [(trade.side, trade.ticker) for trade in result.trades]
@@ -235,6 +259,9 @@ def test_run_backtest_weekly_rebalance_waits_until_next_week():
         slippage_rate=0.0,
         enable_stops=False,
         rebalance_frequency="weekly",
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
     )
 
     trade_sides = [(trade.date, trade.side, trade.ticker) for trade in result.trades]
@@ -295,6 +322,9 @@ def test_sell_uses_kospi_tax_rate():
         tax_rate_kosdaq=0.0,
         slippage_rate=0.0,
         rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
     )
 
     sell = next(trade for trade in result.trades if trade.side == "SELL" and trade.ticker == "AAA")
@@ -317,6 +347,9 @@ def test_sell_uses_kosdaq_tax_rate():
         tax_rate_kospi=0.0,
         tax_rate_kosdaq=0.0020,
         slippage_rate=0.0,
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
     )
 
     sell = next(trade for trade in result.trades if trade.side == "SELL" and trade.ticker == "BBB")
@@ -385,13 +418,16 @@ def test_run_backtest_triggers_trailing_stop_after_peak_drop():
         tax_rate_kosdaq=0.0,
         slippage_rate=0.0,
         stop_loss_pct=-0.50,
+        profit_take_pct=0.05,
         trailing_stop_pct=-0.10,
+        breakeven_stop_pct=-0.20,
+        weighting="equal",
     )
 
-    sell = next(trade for trade in result.trades if trade.side == "SELL")
-    assert sell.date == date(2026, 1, 5)
-    assert sell.price == 104
-    assert sell.reason == "trailing_stop"
+    sells = [trade for trade in result.trades if trade.side == "SELL"]
+    assert [trade.reason for trade in sells] == ["profit_take_20", "post_profit_trailing_stop"]
+    assert sells[-1].date == date(2026, 1, 5)
+    assert sells[-1].price == 104
 
 
 def test_run_backtest_prefers_stop_loss_when_both_stops_trigger():
@@ -421,6 +457,7 @@ def test_run_backtest_prefers_stop_loss_when_both_stops_trigger():
         slippage_rate=0.0,
         stop_loss_pct=-0.10,
         trailing_stop_pct=-0.10,
+        weighting="equal",
     )
 
     sell = next(trade for trade in result.trades if trade.side == "SELL")
@@ -452,6 +489,7 @@ def test_run_backtest_triggers_stop_on_last_day_uses_close_fallback():
         tax_rate_kosdaq=0.0,
         slippage_rate=0.0,
         stop_loss_pct=-0.10,
+        weighting="equal",
     )
 
     sell = next(trade for trade in result.trades if trade.side == "SELL")
@@ -487,9 +525,217 @@ def test_run_backtest_disable_stops_keeps_old_behavior():
         slippage_rate=0.0,
         enable_stops=False,
         stop_loss_pct=-0.10,
+        weighting="equal",
     )
 
     assert [trade.side for trade in result.trades] == ["BUY"]
+
+
+def test_run_backtest_takes_half_profit_at_twenty_percent_next_open():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_single_stock_prices(
+        engine,
+        [
+            (date(2026, 1, 1), 100, 100),
+            (date(2026, 1, 2), 100, 121),
+            (date(2026, 1, 3), 122, 122),
+        ],
+    )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 3),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        stop_loss_pct=-0.05,
+        profit_take_pct=0.20,
+        profit_take_sell_fraction=0.50,
+        weighting="equal",
+    )
+
+    sells = [trade for trade in result.trades if trade.side == "SELL"]
+    assert len(sells) == 1
+    assert sells[0].reason == "profit_take_20"
+    assert sells[0].date == date(2026, 1, 3)
+    assert sells[0].quantity == pytest.approx(50.0)
+
+
+def test_run_backtest_post_profit_trailing_bucket_sells_independently():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_single_stock_prices(
+        engine,
+        [
+            (date(2026, 1, 1), 100, 100),
+            (date(2026, 1, 2), 100, 121),
+            (date(2026, 1, 3), 122, 130),
+            (date(2026, 1, 4), 116, 116),
+            (date(2026, 1, 5), 115, 118),
+        ],
+    )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        stop_loss_pct=-0.05,
+        profit_take_pct=0.20,
+        trailing_stop_pct=-0.10,
+        weighting="equal",
+    )
+
+    reasons = [trade.reason for trade in result.trades if trade.side == "SELL"]
+    assert reasons == ["profit_take_20", "post_profit_trailing_stop"]
+
+
+def test_run_backtest_post_profit_breakeven_bucket_sells_independently():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_single_stock_prices(
+        engine,
+        [
+            (date(2026, 1, 1), 100, 100),
+            (date(2026, 1, 2), 100, 121),
+            (date(2026, 1, 3), 122, 130),
+            (date(2026, 1, 4), 101, 100),
+            (date(2026, 1, 5), 99, 100),
+        ],
+    )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        stop_loss_pct=-0.05,
+        profit_take_pct=0.20,
+        trailing_stop_pct=-0.50,
+        weighting="equal",
+    )
+
+    reasons = [trade.reason for trade in result.trades if trade.side == "SELL"]
+    assert reasons == ["profit_take_20", "post_profit_breakeven_stop"]
+
+
+def test_rebalance_buffer_keeps_rank_just_outside_top_n():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_prices_for_tickers(engine, ["AAA", "BBB"], start=date(2026, 1, 1), days=5, price=100)
+
+    def score_func(_engine, *, as_of_date):
+        if as_of_date <= date(2026, 1, 2):
+            return [
+                FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 10.0, 1),
+                FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 9.0, 2),
+            ]
+        return [
+            FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 10.0, 1),
+            FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 9.0, 2),
+        ]
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+        scoring_func=score_func,
+        initial_capital=10_000,
+        top_n=1,
+        sell_rank_buffer=2,
+        rebalance_frequency="daily",
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+    )
+
+    assert [trade.reason for trade in result.trades if trade.side == "SELL"] == []
+
+
+def test_rebalance_min_holding_blocks_early_rebalance_sell():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_prices_for_tickers(engine, ["AAA", "BBB"], start=date(2026, 1, 1), days=6, price=100)
+
+    def score_func(_engine, *, as_of_date):
+        if as_of_date <= date(2026, 1, 2):
+            return [FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 10.0, 1)]
+        return [FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 10.0, 1)]
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 6),
+        scoring_func=score_func,
+        initial_capital=10_000,
+        top_n=1,
+        sell_rank_buffer=1,
+        min_holding_trading_days=2,
+        rebalance_frequency="daily",
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+    )
+
+    sells = [trade for trade in result.trades if trade.side == "SELL" and trade.reason == "rebalance"]
+    assert sells[0].date >= date(2026, 1, 5)
+
+
+def test_run_backtest_score_weighted_allocation_uses_target_scores():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_prices_for_tickers(engine, ["AAA", "BBB"], start=date(2026, 1, 1), days=3, price=100)
+
+    def score_func(_engine, *, as_of_date):
+        return [
+            FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 3.0, 1),
+            FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 1.0, 2),
+        ]
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 3),
+        scoring_func=score_func,
+        initial_capital=10_000,
+        top_n=2,
+        weighting="score_weighted",
+        min_position_weight=0.01,
+        max_position_weight=0.80,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+    )
+
+    buys = [trade for trade in result.trades if trade.side == "BUY"]
+    assert [(trade.ticker, trade.quantity) for trade in buys] == [
+        ("AAA", pytest.approx(75.0)),
+        ("BBB", pytest.approx(25.0)),
+    ]
 
 
 def test_stops_with_costs_change_trade_count_and_equity():
@@ -584,12 +830,13 @@ def test_stop_cooldown_blocks_rebuy_until_calendar_days_pass():
         stop_loss_pct=-0.10,
         stop_cooldown_days=1,
         rebalance_frequency="daily",
+        weighting="equal",
     )
 
     buys = [trade.date for trade in result.trades if trade.side == "BUY"]
     sells = [trade.date for trade in result.trades if trade.side == "SELL"]
-    assert sells == [date(2026, 1, 4)]
-    assert buys == [date(2026, 1, 2), date(2026, 1, 6)]
+    assert sells == [date(2026, 1, 3)]
+    assert buys == [date(2026, 1, 2), date(2026, 1, 5)]
 
 
 def test_is_kosdaq_market_accepts_new_and_legacy_market_names():
