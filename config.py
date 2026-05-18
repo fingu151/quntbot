@@ -216,7 +216,9 @@ class PortfolioConfig:
     n_holdings: int = 20
 
     # 종목별 비중 ("equal" = 균등 / "score_weighted" = 점수 비례)
-    weighting: Literal["equal", "score_weighted"] = "equal"
+    weighting: Literal["equal", "score_weighted"] = "score_weighted"
+    min_position_weight: float = 0.03
+    max_position_weight: float = 0.15
 
     # 종목당 매수 가능 가격 필터: 할당 금액 < 1주 가격이면 자동 제외
     enforce_price_filter: bool = True
@@ -235,12 +237,15 @@ PORTFOLIO = PortfolioConfig()
 @dataclass(frozen=True)
 class ExitRulesConfig:
     # 손절: 매수가 대비 -X% 도달 시 즉시 시장가 매도
-    stop_loss_pct: float = -0.08   # -8%
+    stop_loss_pct: float = -0.05   # -5%
 
     # 트레일링 스톱: 보유 후 최고가 대비 -X% 하락 시 매도
     trailing_stop_pct: float = -0.10  # -10%
     # Calendar days to block rebuying a ticker after a stop exit. 0 preserves prior behavior.
     stop_cooldown_days: int = 0
+    profit_take_pct: float = 0.20
+    profit_take_sell_fraction: float = 0.50
+    breakeven_stop_pct: float = 0.0
 
     # 리밸런싱: 점수 하위로 밀려나면 교체 (Phase 2 점수 엔진과 연동)
     use_rebalance_exit: bool = True
@@ -255,6 +260,8 @@ EXIT_RULES = ExitRulesConfig()
 class RebalanceConfig:
     # 정기 리밸런싱 주기
     frequency: Literal["daily", "weekly", "monthly"] = "weekly"
+    sell_rank_buffer: int = 30
+    min_holding_trading_days: int = 2
 
     # 장 시작 전 점수 재계산 시각 (HH:MM, KST)
     # Pre-market data sync time (HH:MM, KST)
@@ -364,10 +371,20 @@ def validate() -> list[str]:
         warnings.append("KIS request timeout must be greater than 0. Check .env.")
     if PORTFOLIO.n_holdings <= 0:
         warnings.append("PORTFOLIO.n_holdings 는 1 이상이어야 합니다.")
+    if not 0 < PORTFOLIO.min_position_weight <= PORTFOLIO.max_position_weight <= 1:
+        warnings.append("PORTFOLIO position weights must satisfy 0 < min <= max <= 1.")
     if EXIT_RULES.stop_loss_pct >= 0:
         warnings.append("EXIT_RULES.stop_loss_pct 는 음수여야 합니다.")
     if EXIT_RULES.trailing_stop_pct >= 0:
         warnings.append("EXIT_RULES.trailing_stop_pct 는 음수여야 합니다.")
+    if EXIT_RULES.profit_take_pct <= 0:
+        warnings.append("EXIT_RULES.profit_take_pct must be positive.")
+    if not 0 < EXIT_RULES.profit_take_sell_fraction < 1:
+        warnings.append("EXIT_RULES.profit_take_sell_fraction must be between 0 and 1.")
+    if REBALANCE.sell_rank_buffer < PORTFOLIO.n_holdings:
+        warnings.append("REBALANCE.sell_rank_buffer must be >= PORTFOLIO.n_holdings.")
+    if REBALANCE.min_holding_trading_days < 0:
+        warnings.append("REBALANCE.min_holding_trading_days must be zero or greater.")
     return warnings
 
 
