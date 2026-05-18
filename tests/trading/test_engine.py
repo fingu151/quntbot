@@ -2,7 +2,7 @@
 import json
 from datetime import date
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -220,7 +220,8 @@ def test_check_exit_rules_takes_half_profit_once(tmp_path):
 
 def test_check_exit_rules_full_stops_before_profit_take(tmp_path):
     engine = _make_engine(stop_loss_pct=-0.05)
-    engine._exit_state_store = ExitStateStore(tmp_path / "exit_state.json")
+    exit_state_path = tmp_path / "exit_state.json"
+    engine._exit_state_store = ExitStateStore(exit_state_path)
     engine._client.get_holdings.return_value = [
         {
             "ticker": "005930",
@@ -237,6 +238,102 @@ def test_check_exit_rules_full_stops_before_profit_take(tmp_path):
     engine._client.place_order.assert_called_once_with(
         "005930", qty=10, price=0, side="SELL"
     )
+    assert "005930" not in engine._exit_state_store.load()
+
+
+def test_check_exit_rules_prunes_zero_qty_holding_state(tmp_path):
+    engine = _make_engine(stop_loss_pct=-0.05)
+    exit_state_path = tmp_path / "exit_state.json"
+    engine._exit_state_store = ExitStateStore(exit_state_path)
+    exit_state_path.write_text(
+        json.dumps(
+            {
+                "005930": {
+                    "ticker": "005930",
+                    "entry_price": 100_000,
+                    "original_qty": 10,
+                    "entry_date": "2026-05-19",
+                    "profit_take_done": True,
+                    "trailing_qty": 0,
+                    "breakeven_qty": 0,
+                    "peak_price": 130_000,
+                    "last_updated": "2026-05-19T00:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 0,
+            "avg_price": 100_000,
+            "current_price": 121_000,
+        }
+    ]
+
+    triggered = engine.check_exit_rules()
+
+    assert triggered == []
+    assert engine._exit_state_store.load() == {}
+    engine._client.place_order.assert_not_called()
+
+
+def test_check_exit_rules_same_price_rebuy_after_completed_exit_is_fresh(tmp_path):
+    engine = _make_engine(stop_loss_pct=-0.05)
+    exit_state_path = tmp_path / "exit_state.json"
+    engine._exit_state_store = ExitStateStore(exit_state_path)
+    exit_state_path.write_text(
+        json.dumps(
+            {
+                "005930": {
+                    "ticker": "005930",
+                    "entry_price": 100_000,
+                    "original_qty": 10,
+                    "entry_date": "2026-05-19",
+                    "profit_take_done": True,
+                    "trailing_qty": 0,
+                    "breakeven_qty": 0,
+                    "peak_price": 130_000,
+                    "last_updated": "2026-05-19T00:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 0,
+            "avg_price": 100_000,
+            "current_price": 100_000,
+        }
+    ]
+    assert engine.check_exit_rules() == []
+
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 10,
+            "avg_price": 100_000,
+            "current_price": 121_000,
+        }
+    ]
+    triggered = engine.check_exit_rules()
+
+    assert triggered == ["005930"]
+    engine._client.place_order.assert_called_once_with(
+        "005930", qty=5, price=0, side="SELL"
+    )
+    state = engine._exit_state_store.load()["005930"]
+    assert state.profit_take_done is True
+    assert state.trailing_qty == 2
+    assert state.breakeven_qty == 3
+    assert state.peak_price == 121_000
 
 
 def test_check_exit_rules_trailing_bucket_sells_after_profit_take(tmp_path):
@@ -315,6 +412,51 @@ def test_check_exit_rules_breakeven_bucket_sells_after_profit_take(tmp_path):
 
     assert triggered == ["005930"]
     sell_mock.assert_called_once_with("005930", qty=4, price=0, name="Samsung")
+
+
+def test_check_exit_rules_removes_state_after_all_staged_buckets_sell(tmp_path):
+    engine = _make_engine(stop_loss_pct=-0.05)
+    exit_state_path = tmp_path / "exit_state.json"
+    engine._exit_state_store = ExitStateStore(exit_state_path)
+    exit_state_path.write_text(
+        json.dumps(
+            {
+                "005930": {
+                    "ticker": "005930",
+                    "entry_price": 100_000,
+                    "original_qty": 10,
+                    "entry_date": "2026-05-19",
+                    "profit_take_done": True,
+                    "trailing_qty": 3,
+                    "breakeven_qty": 4,
+                    "peak_price": 130_000,
+                    "last_updated": "2026-05-19T00:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 7,
+            "avg_price": 100_000,
+            "current_price": 100_000,
+        }
+    ]
+
+    with patch.object(engine, "sell", return_value={"rt_cd": "0"}) as sell_mock:
+        triggered = engine.check_exit_rules()
+
+    assert triggered == ["005930"]
+    sell_mock.assert_has_calls(
+        [
+            call("005930", qty=3, price=0, name="Samsung"),
+            call("005930", qty=4, price=0, name="Samsung"),
+        ]
+    )
+    assert "005930" not in engine._exit_state_store.load()
 
 
 # ------------------------------------------------------------------

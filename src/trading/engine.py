@@ -252,17 +252,22 @@ class TradingEngine:
 
         triggered: list[str] = []
         holdings = self._client.get_holdings()
-        held_tickers = {h["ticker"] for h in holdings}
-        self._exit_state_store.prune(held_tickers)
+        active_holdings = [
+            h
+            for h in holdings
+            if int(h.get("qty", 0) or 0) > 0
+            and float(h.get("avg_price", 0) or 0) > 0
+            and float(h.get("current_price", 0) or 0) > 0
+        ]
+        active_tickers = {h["ticker"] for h in active_holdings}
+        self._exit_state_store.prune(active_tickers)
 
-        for h in holdings:
+        for h in active_holdings:
             ticker = h["ticker"]
             name = h.get("name", ticker)
             qty = int(h.get("qty", 0) or 0)
             avg = float(h.get("avg_price", 0) or 0)
             current = float(h.get("current_price", 0) or 0)
-            if qty <= 0 or avg <= 0 or current <= 0:
-                continue
 
             state = self._exit_state_store.get_or_create(
                 ticker=ticker,
@@ -280,9 +285,7 @@ class TradingEngine:
                 self._notifier.notify_stop_loss(ticker, name, qty, pnl_rate)
                 result = self.sell(ticker, qty=qty, price=0, name=name)
                 if result.get("rt_cd") == "0":
-                    state.trailing_qty = 0
-                    state.breakeven_qty = 0
-                    self._exit_state_store.save_position(state)
+                    self._exit_state_store.delete(ticker)
                     triggered.append(ticker)
                 continue
 
@@ -331,7 +334,10 @@ class TradingEngine:
                     )
                     if result.get("rt_cd") == "0":
                         state.trailing_qty = 0
-                        self._exit_state_store.save_position(state)
+                        if state.breakeven_qty <= 0:
+                            self._exit_state_store.delete(ticker)
+                        else:
+                            self._exit_state_store.save_position(state)
                         triggered.append(ticker)
 
             breakeven_price = avg * (1.0 + self._exit_rules.breakeven_stop_pct)
@@ -344,7 +350,10 @@ class TradingEngine:
                 result = self.sell(ticker, qty=state.breakeven_qty, price=0, name=name)
                 if result.get("rt_cd") == "0":
                     state.breakeven_qty = 0
-                    self._exit_state_store.save_position(state)
+                    if state.trailing_qty <= 0:
+                        self._exit_state_store.delete(ticker)
+                    else:
+                        self._exit_state_store.save_position(state)
                     if ticker not in triggered:
                         triggered.append(ticker)
 

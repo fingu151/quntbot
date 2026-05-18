@@ -69,6 +69,20 @@ def test_save_position_refreshes_last_updated(tmp_path: Path):
     assert store.load()["005930"].last_updated != "2026-05-19T00:00:00+00:00"
 
 
+def test_delete_removes_position_state(tmp_path: Path):
+    store = ExitStateStore(tmp_path / "exit_state.json")
+    store.get_or_create(
+        ticker="005930",
+        entry_price=100_000,
+        qty=10,
+        entry_date="2026-05-19",
+    )
+
+    store.delete("005930")
+
+    assert "005930" not in store.load()
+
+
 def test_get_or_create_resets_stale_state_when_entry_price_changes(tmp_path: Path):
     store = ExitStateStore(tmp_path / "exit_state.json")
     state = store.get_or_create(

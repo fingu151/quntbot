@@ -131,6 +131,13 @@ class ExitStateStore:
         states[state.ticker] = state
         self.save(states)
 
+    def delete(self, ticker: str) -> None:
+        states = self.load()
+        if ticker not in states:
+            return
+        del states[ticker]
+        self.save(states)
+
     def prune(self, held_tickers: set[str]) -> None:
         states = self.load()
         pruned = {
