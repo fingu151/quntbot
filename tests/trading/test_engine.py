@@ -1,4 +1,5 @@
 """TradingEngine 단위 테스트."""
+import json
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -236,6 +237,84 @@ def test_check_exit_rules_full_stops_before_profit_take(tmp_path):
     engine._client.place_order.assert_called_once_with(
         "005930", qty=10, price=0, side="SELL"
     )
+
+
+def test_check_exit_rules_trailing_bucket_sells_after_profit_take(tmp_path):
+    engine = _make_engine(stop_loss_pct=-0.05)
+    exit_state_path = tmp_path / "exit_state.json"
+    engine._exit_state_store = ExitStateStore(exit_state_path)
+    exit_state_path.write_text(
+        json.dumps(
+            {
+                "005930": {
+                    "ticker": "005930",
+                    "entry_price": 100_000,
+                    "original_qty": 10,
+                    "entry_date": "2026-05-19",
+                    "profit_take_done": True,
+                    "trailing_qty": 3,
+                    "breakeven_qty": 4,
+                    "peak_price": 130_000,
+                    "last_updated": "2026-05-19T00:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 7,
+            "avg_price": 100_000,
+            "current_price": 116_000,
+        }
+    ]
+
+    with patch.object(engine, "sell", return_value={"rt_cd": "0"}) as sell_mock:
+        triggered = engine.check_exit_rules()
+
+    assert triggered == ["005930"]
+    sell_mock.assert_called_once_with("005930", qty=3, price=0, name="Samsung")
+
+
+def test_check_exit_rules_breakeven_bucket_sells_after_profit_take(tmp_path):
+    engine = _make_engine(stop_loss_pct=-0.05)
+    exit_state_path = tmp_path / "exit_state.json"
+    engine._exit_state_store = ExitStateStore(exit_state_path)
+    exit_state_path.write_text(
+        json.dumps(
+            {
+                "005930": {
+                    "ticker": "005930",
+                    "entry_price": 100_000,
+                    "original_qty": 10,
+                    "entry_date": "2026-05-19",
+                    "profit_take_done": True,
+                    "trailing_qty": 3,
+                    "breakeven_qty": 4,
+                    "peak_price": 105_000,
+                    "last_updated": "2026-05-19T00:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 7,
+            "avg_price": 100_000,
+            "current_price": 100_000,
+        }
+    ]
+
+    with patch.object(engine, "sell", return_value={"rt_cd": "0"}) as sell_mock:
+        triggered = engine.check_exit_rules()
+
+    assert triggered == ["005930"]
+    sell_mock.assert_called_once_with("005930", qty=4, price=0, name="Samsung")
 
 
 # ------------------------------------------------------------------

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +15,25 @@ from loguru import logger
 class PositionExitState:
     ticker: str
     entry_price: float
-    qty: int
+    original_qty: int
     entry_date: str
+    last_updated: str
     profit_take_done: bool = False
     trailing_qty: int = 0
     breakeven_qty: int = 0
     peak_price: float = 0.0
+
+    @property
+    def qty(self) -> int:
+        return self.original_qty
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _entry_price_materially_changed(stored: float, current: float) -> bool:
+    return not math.isclose(stored, current, rel_tol=1e-6, abs_tol=0.01)
 
 
 class ExitStateStore:
@@ -41,11 +56,17 @@ class ExitStateStore:
             if not isinstance(payload, dict):
                 continue
             try:
+                original_qty = payload.get("original_qty", payload.get("qty"))
                 states[str(ticker)] = PositionExitState(
                     ticker=str(payload.get("ticker") or ticker),
                     entry_price=float(payload["entry_price"]),
-                    qty=int(payload["qty"]),
+                    original_qty=int(original_qty),
                     entry_date=str(payload["entry_date"]),
+                    last_updated=str(
+                        payload.get("last_updated")
+                        or payload.get("entry_date")
+                        or ""
+                    ),
                     profit_take_done=bool(payload.get("profit_take_done", False)),
                     trailing_qty=int(payload.get("trailing_qty", 0) or 0),
                     breakeven_qty=int(payload.get("breakeven_qty", 0) or 0),
@@ -78,13 +99,26 @@ class ExitStateStore:
         states = self.load()
         state = states.get(ticker)
         if state is not None:
-            return state
+            if (
+                not _entry_price_materially_changed(
+                    state.entry_price, float(entry_price)
+                )
+                and int(qty) <= state.original_qty
+            ):
+                return state
+
+            logger.info(
+                f"resetting exit state for rebuilt position: ticker={ticker}, "
+                f"stored_entry={state.entry_price}, current_entry={float(entry_price)}, "
+                f"stored_original_qty={state.original_qty}, current_qty={int(qty)}"
+            )
 
         state = PositionExitState(
             ticker=ticker,
             entry_price=float(entry_price),
-            qty=int(qty),
+            original_qty=int(qty),
             entry_date=entry_date,
+            last_updated=_utc_now(),
             peak_price=float(entry_price),
         )
         states[ticker] = state
@@ -93,6 +127,7 @@ class ExitStateStore:
 
     def save_position(self, state: PositionExitState) -> None:
         states = self.load()
+        state.last_updated = _utc_now()
         states[state.ticker] = state
         self.save(states)
 
