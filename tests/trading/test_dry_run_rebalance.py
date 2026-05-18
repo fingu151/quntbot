@@ -125,9 +125,10 @@ def test_run_prints_and_writes_rebalance_report_without_orders(tmp_path, capsys)
     assert "dry_run=true" in output
     assert "target_count=1" in output
     assert "SELL,OLD,3" in output
-    assert "BUY,NEW,13" in output
+    assert "BUY,NEW,2" in output
     assert "NEW" in report
     assert "OLD" in report
+    assert "| 1 | NEW | Stock NEW | 9.0000 | 15.00% |" in report
     client.get_balance.assert_called_once()
     client.get_holdings.assert_not_called()
     client.place_order.assert_not_called()
@@ -252,7 +253,7 @@ def test_run_uses_latest_db_close_when_quote_fails_and_fallback_enabled(capsys):
 
     assert result == 0
     assert "price_fallback,NEW,10000" in output
-    assert "BUY,NEW,13" in output
+    assert "BUY,NEW,2" in output
     client.place_order.assert_not_called()
 
 
@@ -286,7 +287,7 @@ def test_run_retries_quote_lookup_before_fallback(capsys):
     output = capsys.readouterr().out
 
     assert result == 0
-    assert "BUY,NEW,13" in output
+    assert "BUY,NEW,2" in output
     assert "price_lookup_failed,NEW" not in output
     assert client.get_current_price.call_count == 2
     sleeper.assert_called_once_with(0.25)
@@ -448,4 +449,5 @@ def test_run_writes_machine_readable_json_report(tmp_path):
     assert payload["skipped_buys"] == []
     assert payload["orders"][0]["side"] == "SELL"
     assert payload["orders"][1]["side"] == "BUY"
+    assert payload["targets"][0]["target_weight"] == 0.15
     client.place_order.assert_not_called()

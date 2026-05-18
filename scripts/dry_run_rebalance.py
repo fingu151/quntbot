@@ -15,11 +15,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from config import KIS, PORTFOLIO
+from config import KIS, PORTFOLIO, REBALANCE
 from src.data.database import create_tables, get_engine, session_scope
 from src.data.models import DailyPrice
 from src.factors.engine import calculate_factor_scores
 from src.factors.models import FactorScore
+from src.trading.allocation import compute_score_weights
 from src.trading.kis_client import KisClient
 from src.trading.rebalancer import (
     RebalanceOrder,
@@ -77,7 +78,9 @@ def run(
         return 1
 
     target_scores = scores[:args.top_n]
+    buffer_scores = scores[:max(args.top_n, REBALANCE.sell_rank_buffer)]
     target_tickers = [score.ticker for score in target_scores]
+    buffer_tickers = {score.ticker for score in buffer_scores}
     client = client_factory()
 
     try:
@@ -90,6 +93,14 @@ def run(
     cash = int(output2.get("dnca_tot_amt", 0) or 0)
 
     held_tickers = {holding["ticker"] for holding in holdings}
+    sell_eligible_tickers = sorted(held_tickers - buffer_tickers)
+    target_weights = {}
+    if PORTFOLIO.weighting == "score_weighted":
+        target_weights = compute_score_weights(
+            [(score.ticker, score.total_score) for score in target_scores],
+            min_weight=PORTFOLIO.min_position_weight,
+            max_weight=PORTFOLIO.max_position_weight,
+        )
     prices: dict[str, int] = {}
     previous_closes: dict[str, int] = {}
     price_failures: list[str] = []
@@ -157,6 +168,8 @@ def run(
         prices=prices,
         previous_closes=previous_closes,
         cash=cash,
+        sell_eligible_tickers=sell_eligible_tickers,
+        target_weights=target_weights,
     )
     report = _format_markdown_report(
         as_of_date=args.as_of_date,
@@ -165,6 +178,7 @@ def run(
         cash=cash,
         sells=sells,
         buys=buys,
+        target_weights=target_weights,
         skipped_buys=skipped_buys,
         price_failures=price_failures,
         price_fallbacks=price_fallbacks,
@@ -177,6 +191,7 @@ def run(
         cash=cash,
         sells=sells,
         buys=buys,
+        target_weights=target_weights,
         skipped_buys=skipped_buys,
         price_failures=price_failures,
         price_fallbacks=price_fallbacks,
@@ -224,6 +239,7 @@ def _format_markdown_report(
     cash: int,
     sells: list[RebalanceOrder],
     buys: list[RebalanceOrder],
+    target_weights: dict[str, float],
     skipped_buys: list[dict[str, Any]],
     price_failures: list[str],
     price_fallbacks: dict[str, int],
@@ -248,11 +264,14 @@ def _format_markdown_report(
         "",
         "## Target Portfolio",
         "",
-        "| rank | ticker | name | score |",
-        "| ---: | --- | --- | ---: |",
+        "| rank | ticker | name | score | target_weight |",
+        "| ---: | --- | --- | ---: | ---: |",
     ]
     for score in target_scores:
-        lines.append(f"| {score.rank} | {score.ticker} | {score.name} | {score.total_score:.4f} |")
+        lines.append(
+            f"| {score.rank} | {score.ticker} | {score.name} | "
+            f"{score.total_score:.4f} | {target_weights.get(score.ticker, 0.0):.2%} |"
+        )
     lines.extend(["", "## Planned Orders", "", "| side | ticker | qty | reason |", "| --- | --- | ---: | --- |"])
     if not sells and not buys:
         lines.append("| - | - | 0 | No orders needed |")
@@ -305,6 +324,7 @@ def _format_json_report(
     cash: int,
     sells: list[RebalanceOrder],
     buys: list[RebalanceOrder],
+    target_weights: dict[str, float],
     skipped_buys: list[dict[str, Any]],
     price_failures: list[str],
     price_fallbacks: dict[str, int],
@@ -332,6 +352,7 @@ def _format_json_report(
                 "ticker": score.ticker,
                 "name": score.name,
                 "total_score": score.total_score,
+                "target_weight": target_weights.get(score.ticker, 0.0),
             }
             for score in target_scores
         ],

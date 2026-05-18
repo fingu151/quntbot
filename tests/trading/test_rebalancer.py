@@ -149,8 +149,60 @@ def test_buy_budget_includes_expected_sell_proceeds():
         portfolio=_portfolio(n=1),
     )
 
-    assert sells == [RebalanceOrder("OLD", "SELL", 5, "목표 포트폴리오에서 제외 (보유 5주)")]
-    assert buys == [RebalanceOrder("NEW", "BUY", 5, "목표 포트폴리오 편입 (배분 50,000원 / 10,000원 = 5주)")]
+    assert sells == [RebalanceOrder("OLD", "SELL", 5, "rebalance sell buffer exit (holding 5 shares)")]
+    assert buys == [RebalanceOrder("NEW", "BUY", 5, "target portfolio entry (budget 50,000 / 10,000 = 5 shares)")]
+
+
+def test_rank_buffer_keeps_held_ticker_outside_buy_list_but_inside_sell_buffer():
+    holdings = [
+        {"ticker": "HELD", "name": "Held", "qty": 10, "avg_price": 1000, "current_price": 1000},
+    ]
+
+    sells, buys = compute_rebalance_orders(
+        holdings=holdings,
+        target_tickers=["NEW"],
+        prices={"NEW": 1000},
+        cash=10_000,
+        portfolio=_portfolio(n=1),
+        sell_eligible_tickers=[],
+    )
+
+    assert sells == []
+    assert [order.ticker for order in buys] == ["NEW"]
+
+
+def test_rank_buffer_sells_held_ticker_outside_sell_buffer():
+    holdings = [
+        {"ticker": "OLD", "name": "Old", "qty": 10, "avg_price": 1000, "current_price": 1000},
+    ]
+
+    sells, _ = compute_rebalance_orders(
+        holdings=holdings,
+        target_tickers=["NEW"],
+        prices={"NEW": 1000},
+        cash=10_000,
+        portfolio=_portfolio(n=1),
+        sell_eligible_tickers=["OLD"],
+    )
+
+    assert [order.ticker for order in sells] == ["OLD"]
+
+
+def test_score_weighted_buy_sizing_uses_target_weights():
+    holdings = []
+    target = ["AAA", "BBB"]
+    prices = {"AAA": 1000, "BBB": 1000}
+
+    _, buys = compute_rebalance_orders(
+        holdings=holdings,
+        target_tickers=target,
+        prices=prices,
+        cash=100_000,
+        portfolio=_portfolio(n=2),
+        target_weights={"AAA": 0.70, "BBB": 0.30},
+    )
+
+    assert [(order.ticker, order.qty) for order in buys] == [("AAA", 70), ("BBB", 30)]
 
 
 # ------------------------------------------------------------------
