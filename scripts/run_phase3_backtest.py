@@ -54,6 +54,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=("equal", "score_weighted"),
         default=PORTFOLIO.weighting,
     )
+    parser.add_argument("--min-position-weight", type=float, default=PORTFOLIO.min_position_weight)
+    parser.add_argument("--max-position-weight", type=float, default=PORTFOLIO.max_position_weight)
     parser.add_argument("--commission-rate", type=float, default=COST.commission_rate)
     parser.add_argument("--tax-rate-kospi", type=float, default=COST.tax_rate_kospi)
     parser.add_argument("--tax-rate-kosdaq", type=float, default=COST.tax_rate_kosdaq)
@@ -82,6 +84,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--sell-rank-buffer must be greater than 0")
     if args.min_holding_trading_days < 0:
         parser.error("--min-holding-trading-days must be zero or greater")
+    if args.min_position_weight <= 0:
+        parser.error("--min-position-weight must be greater than 0")
+    if args.max_position_weight > 1:
+        parser.error("--max-position-weight must be at most 1")
+    if args.min_position_weight > args.max_position_weight:
+        parser.error("--min-position-weight must be less than or equal to --max-position-weight")
     for option_name in ("commission_rate", "tax_rate_kospi", "tax_rate_kosdaq", "slippage_rate"):
         if getattr(args, option_name) < 0:
             parser.error(f"--{option_name.replace('_', '-')} must be zero or greater")
@@ -116,6 +124,8 @@ def run(
         sell_rank_buffer=args.sell_rank_buffer,
         min_holding_trading_days=args.min_holding_trading_days,
         weighting=args.weighting,
+        min_position_weight=args.min_position_weight,
+        max_position_weight=args.max_position_weight,
     )
     print(f"initial_capital={result.initial_capital:.2f}")
     print(f"final_equity={result.final_equity:.2f}")

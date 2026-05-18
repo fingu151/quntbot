@@ -2,6 +2,8 @@ from datetime import date
 import subprocess
 import sys
 
+import pytest
+
 from scripts import run_backtest_matrix as matrix_script
 from scripts.run_phase3_backtest import parse_args, run
 from src.backtest.models import BacktestResult, BacktestTrade
@@ -75,6 +77,10 @@ def test_parse_args_accepts_staged_exit_rebalance_and_weighting_options():
             "4",
             "--weighting",
             "equal",
+            "--min-position-weight",
+            "0.05",
+            "--max-position-weight",
+            "0.20",
         ]
     )
 
@@ -84,6 +90,27 @@ def test_parse_args_accepts_staged_exit_rebalance_and_weighting_options():
     assert args.sell_rank_buffer == 25
     assert args.min_holding_trading_days == 4
     assert args.weighting == "equal"
+    assert args.min_position_weight == 0.05
+    assert args.max_position_weight == 0.20
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_message"),
+    [
+        (["--min-position-weight", "0"], "--min-position-weight must be greater than 0"),
+        (["--max-position-weight", "1.1"], "--max-position-weight must be at most 1"),
+        (
+            ["--min-position-weight", "0.30", "--max-position-weight", "0.20"],
+            "--min-position-weight must be less than or equal to --max-position-weight",
+        ),
+    ],
+)
+def test_parse_args_validates_position_weight_caps(argv, expected_message, capsys):
+    with pytest.raises(SystemExit):
+        parse_args(argv)
+
+    captured = capsys.readouterr()
+    assert expected_message in captured.err
 
 
 def test_parse_args_accepts_cost_overrides():
@@ -302,6 +329,10 @@ def test_run_passes_staged_exit_rebalance_and_weighting_options_to_backtest():
             "4",
             "--weighting",
             "equal",
+            "--min-position-weight",
+            "0.05",
+            "--max-position-weight",
+            "0.20",
         ]
     )
 
@@ -313,6 +344,8 @@ def test_run_passes_staged_exit_rebalance_and_weighting_options_to_backtest():
     assert captured_kwargs["sell_rank_buffer"] == 25
     assert captured_kwargs["min_holding_trading_days"] == 4
     assert captured_kwargs["weighting"] == "equal"
+    assert captured_kwargs["min_position_weight"] == 0.05
+    assert captured_kwargs["max_position_weight"] == 0.20
 
 
 def test_run_passes_cost_overrides_to_backtest():
@@ -371,6 +404,10 @@ def test_matrix_parse_args_accepts_staged_exit_rebalance_and_weighting_options()
             "4",
             "--weighting",
             "equal",
+            "--min-position-weight",
+            "0.05",
+            "--max-position-weight",
+            "0.20",
         ]
     )
 
@@ -380,6 +417,27 @@ def test_matrix_parse_args_accepts_staged_exit_rebalance_and_weighting_options()
     assert args.sell_rank_buffer == 25
     assert args.min_holding_trading_days == 4
     assert args.weighting == "equal"
+    assert args.min_position_weight == 0.05
+    assert args.max_position_weight == 0.20
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_message"),
+    [
+        (["--min-position-weight", "0"], "--min-position-weight must be greater than 0"),
+        (["--max-position-weight", "1.1"], "--max-position-weight must be at most 1"),
+        (
+            ["--min-position-weight", "0.30", "--max-position-weight", "0.20"],
+            "--min-position-weight must be less than or equal to --max-position-weight",
+        ),
+    ],
+)
+def test_matrix_parse_args_validates_position_weight_caps(argv, expected_message, capsys):
+    with pytest.raises(SystemExit):
+        matrix_script.parse_args(argv)
+
+    captured = capsys.readouterr()
+    assert expected_message in captured.err
 
 
 def test_matrix_run_passes_staged_exit_rebalance_and_weighting_options_to_backtest(capsys):
@@ -416,6 +474,10 @@ def test_matrix_run_passes_staged_exit_rebalance_and_weighting_options_to_backte
             "4",
             "--weighting",
             "equal",
+            "--min-position-weight",
+            "0.05",
+            "--max-position-weight",
+            "0.20",
         ]
     )
 
@@ -428,6 +490,8 @@ def test_matrix_run_passes_staged_exit_rebalance_and_weighting_options_to_backte
     assert captured_kwargs["sell_rank_buffer"] == 25
     assert captured_kwargs["min_holding_trading_days"] == 4
     assert captured_kwargs["weighting"] == "equal"
+    assert captured_kwargs["min_position_weight"] == 0.05
+    assert captured_kwargs["max_position_weight"] == 0.20
 
 
 def test_script_can_be_executed_directly_with_help():
@@ -451,5 +515,7 @@ def test_script_can_be_executed_directly_with_help():
     assert "--sell-rank-buffer" in completed.stdout
     assert "--min-holding-trading-days" in completed.stdout
     assert "--weighting" in completed.stdout
+    assert "--min-position-weight" in completed.stdout
+    assert "--max-position-weight" in completed.stdout
     assert "--commission-rate" in completed.stdout
     assert "--slippage-rate" in completed.stdout
