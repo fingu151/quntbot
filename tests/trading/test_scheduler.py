@@ -248,6 +248,19 @@ def test_research_report_job_fetches_configured_hankyung_source():
     )
 
 
+def test_stop_loss_job_uses_generalized_exit_monitor():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = False
+    engine.check_exit_rules.return_value = ["005930"]
+
+    scheduler._stop_loss_job(engine)
+
+    engine.check_daily_loss_limit.assert_called_once()
+    engine.check_exit_rules.assert_called_once()
+    engine.check_stop_loss.assert_not_called()
+    engine.check_trailing_stop.assert_not_called()
+
+
 def test_run_scheduler_uses_research_report_poll_window():
     fake_scheduler = MagicMock()
     fake_scheduler.start.side_effect = KeyboardInterrupt

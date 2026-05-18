@@ -7,6 +7,7 @@ import pytest
 
 from config import ExitRulesConfig, SafetyConfig
 from src.trading.engine import TradingEngine
+from src.trading.exit_state import ExitStateStore
 
 
 # ------------------------------------------------------------------
@@ -191,6 +192,50 @@ def test_check_stop_loss_does_not_trigger_above_threshold():
     triggered = engine.check_stop_loss()
     assert triggered == []
     engine._client.place_order.assert_not_called()
+
+
+def test_check_exit_rules_takes_half_profit_once(tmp_path):
+    engine = _make_engine(stop_loss_pct=-0.05)
+    engine._exit_state_store = ExitStateStore(tmp_path / "exit_state.json")
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 10,
+            "avg_price": 100_000,
+            "current_price": 121_000,
+        }
+    ]
+
+    first = engine.check_exit_rules()
+    second = engine.check_exit_rules()
+
+    assert first == ["005930"]
+    assert second == []
+    engine._client.place_order.assert_called_once_with(
+        "005930", qty=5, price=0, side="SELL"
+    )
+
+
+def test_check_exit_rules_full_stops_before_profit_take(tmp_path):
+    engine = _make_engine(stop_loss_pct=-0.05)
+    engine._exit_state_store = ExitStateStore(tmp_path / "exit_state.json")
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 10,
+            "avg_price": 100_000,
+            "current_price": 94_000,
+        }
+    ]
+
+    triggered = engine.check_exit_rules()
+
+    assert triggered == ["005930"]
+    engine._client.place_order.assert_called_once_with(
+        "005930", qty=10, price=0, side="SELL"
+    )
 
 
 # ------------------------------------------------------------------

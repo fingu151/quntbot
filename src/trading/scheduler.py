@@ -244,19 +244,16 @@ def _research_report_job(
 
 
 def _stop_loss_job(engine: TradingEngine) -> None:
-    """Intraday stop-loss and trailing-stop monitor."""
+    """Intraday staged exit monitor."""
     try:
         if engine.check_daily_loss_limit():
             logger.error("Daily loss limit exceeded. Trading is halted today.")
             return
-        triggered_sl = engine.check_stop_loss()
-        if triggered_sl:
-            logger.warning(f"[Intraday stop-loss] sells executed: {triggered_sl}")
-        triggered_ts = engine.check_trailing_stop(exclude_tickers=set(triggered_sl))
-        if triggered_ts:
-            logger.warning(f"[Intraday trailing-stop] sells executed: {triggered_ts}")
+        triggered = engine.check_exit_rules()
+        if triggered:
+            logger.warning(f"[Intraday exits] sells executed: {triggered}")
     except Exception as exc:
-        logger.exception(f"Stop monitor failed: {exc}")
+        logger.exception(f"Exit monitor failed: {exc}")
 
 
 def _split_hhmm(value: str) -> tuple[int, int]:

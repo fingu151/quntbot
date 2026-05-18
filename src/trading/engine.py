@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from loguru import logger
 
 from config import DATA_DIR, EXIT_RULES, SAFETY, ExitRulesConfig, SafetyConfig
 from src.notify.notifier import TelegramNotifier
+from src.trading.exit_state import ExitStateStore
 from src.trading.kis_client import KisClient
 
 
@@ -27,6 +29,7 @@ class TradingEngine:
         exit_rules: ExitRulesConfig = EXIT_RULES,
         notifier: TelegramNotifier | None = None,
         daily_anchor_path: Path | None = None,
+        exit_state_path: Path | None = None,
     ) -> None:
         self._client = client
         self._safety = safety
@@ -39,6 +42,9 @@ class TradingEngine:
         self._halted: bool = False   # 일일 손실 한도 초과 시 True
         self._daily_start_equity: int | None = None
         self._daily_anchor_path = daily_anchor_path or (DATA_DIR / "daily_anchor.json")
+        self._exit_state_store = ExitStateStore(
+            exit_state_path or (DATA_DIR / "exit_state.json")
+        )
         self._peak_prices: dict[str, float] = {}  # {ticker: 보유 후 최고가}
 
     # ------------------------------------------------------------------
@@ -236,6 +242,111 @@ class TradingEngine:
         for ticker in list(self._peak_prices):
             if ticker not in held:
                 del self._peak_prices[ticker]
+
+        return triggered
+
+    def check_exit_rules(self) -> list[str]:
+        """Run the staged PAPER exit monitor for current holdings."""
+        self._reset_if_new_day()
+        self._check_halted()
+
+        triggered: list[str] = []
+        holdings = self._client.get_holdings()
+        held_tickers = {h["ticker"] for h in holdings}
+        self._exit_state_store.prune(held_tickers)
+
+        for h in holdings:
+            ticker = h["ticker"]
+            name = h.get("name", ticker)
+            qty = int(h.get("qty", 0) or 0)
+            avg = float(h.get("avg_price", 0) or 0)
+            current = float(h.get("current_price", 0) or 0)
+            if qty <= 0 or avg <= 0 or current <= 0:
+                continue
+
+            state = self._exit_state_store.get_or_create(
+                ticker=ticker,
+                entry_price=avg,
+                qty=qty,
+                entry_date=self._today.isoformat(),
+            )
+            pnl_rate = (current / avg) - 1.0
+
+            if pnl_rate <= self._exit_rules.stop_loss_pct:
+                logger.warning(
+                    f"[Exit full stop] {name}({ticker}) pnl={pnl_rate:.2%}, "
+                    f"threshold={self._exit_rules.stop_loss_pct:.2%}. Selling full position."
+                )
+                self._notifier.notify_stop_loss(ticker, name, qty, pnl_rate)
+                result = self.sell(ticker, qty=qty, price=0, name=name)
+                if result.get("rt_cd") == "0":
+                    state.trailing_qty = 0
+                    state.breakeven_qty = 0
+                    self._exit_state_store.save_position(state)
+                    triggered.append(ticker)
+                continue
+
+            if (
+                not state.profit_take_done
+                and pnl_rate >= self._exit_rules.profit_take_pct
+            ):
+                sell_qty = math.floor(qty * self._exit_rules.profit_take_sell_fraction)
+                if sell_qty <= 0:
+                    continue
+                logger.warning(
+                    f"[Exit profit take] {name}({ticker}) pnl={pnl_rate:.2%}, "
+                    f"threshold={self._exit_rules.profit_take_pct:.2%}. Selling {sell_qty}."
+                )
+                result = self.sell(ticker, qty=sell_qty, price=0, name=name)
+                if result.get("rt_cd") == "0":
+                    remaining_qty = max(qty - sell_qty, 0)
+                    state.profit_take_done = True
+                    state.trailing_qty = remaining_qty // 2
+                    state.breakeven_qty = remaining_qty - state.trailing_qty
+                    state.peak_price = max(state.peak_price, current)
+                    self._exit_state_store.save_position(state)
+                    triggered.append(ticker)
+                continue
+
+            if not state.profit_take_done:
+                continue
+
+            if current > state.peak_price:
+                state.peak_price = current
+                self._exit_state_store.save_position(state)
+
+            if state.trailing_qty > 0 and state.peak_price > 0:
+                trail_rate = (current / state.peak_price) - 1.0
+                if trail_rate <= self._exit_rules.trailing_stop_pct:
+                    logger.warning(
+                        f"[Exit trailing bucket] {name}({ticker}) "
+                        f"peak={state.peak_price:,.0f}, current={current:,.0f}, "
+                        f"drawdown={trail_rate:.2%}. Selling {state.trailing_qty}."
+                    )
+                    self._notifier.notify_stop_loss(
+                        ticker, name, state.trailing_qty, trail_rate
+                    )
+                    result = self.sell(
+                        ticker, qty=state.trailing_qty, price=0, name=name
+                    )
+                    if result.get("rt_cd") == "0":
+                        state.trailing_qty = 0
+                        self._exit_state_store.save_position(state)
+                        triggered.append(ticker)
+
+            breakeven_price = avg * (1.0 + self._exit_rules.breakeven_stop_pct)
+            if state.breakeven_qty > 0 and current <= breakeven_price:
+                logger.warning(
+                    f"[Exit breakeven bucket] {name}({ticker}) "
+                    f"current={current:,.0f}, breakeven={breakeven_price:,.0f}. "
+                    f"Selling {state.breakeven_qty}."
+                )
+                result = self.sell(ticker, qty=state.breakeven_qty, price=0, name=name)
+                if result.get("rt_cd") == "0":
+                    state.breakeven_qty = 0
+                    self._exit_state_store.save_position(state)
+                    if ticker not in triggered:
+                        triggered.append(ticker)
 
         return triggered
 
