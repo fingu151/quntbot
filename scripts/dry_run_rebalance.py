@@ -15,13 +15,17 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from config import KIS, PORTFOLIO, REBALANCE
+from config import DATA_DIR, KIS, PORTFOLIO, REBALANCE
 from src.data.database import create_tables, get_engine, session_scope
 from src.data.models import DailyPrice
 from src.factors.engine import calculate_factor_scores
 from src.factors.models import FactorScore
 from src.trading.allocation import compute_score_weights
 from src.trading.kis_client import KisClient
+from src.trading.rebalance_policy import (
+    compute_rebalance_sell_eligible_tickers,
+    load_exit_entry_dates,
+)
 from src.trading.rebalancer import (
     RebalanceOrder,
     compute_rebalance_orders,
@@ -42,6 +46,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--output-md", type=Path, default=None)
     parser.add_argument("--output-json", type=Path, default=None)
+    parser.add_argument(
+        "--exit-state-path",
+        type=Path,
+        default=DATA_DIR / "exit_state.json",
+        help="Local PAPER exit-state file used for rebalance holding-age checks.",
+    )
     parser.add_argument(
         "--price-fallback",
         choices=("none", "latest-db"),
@@ -93,7 +103,14 @@ def run(
     cash = int(output2.get("dnca_tot_amt", 0) or 0)
 
     held_tickers = {holding["ticker"] for holding in holdings}
-    sell_eligible_tickers = sorted(held_tickers - buffer_tickers)
+    sell_eligible_tickers = compute_rebalance_sell_eligible_tickers(
+        holdings=holdings,
+        buffer_tickers=buffer_tickers,
+        entry_dates=load_exit_entry_dates(args.exit_state_path),
+        db_engine=engine,
+        as_of_date=args.as_of_date,
+        min_holding_trading_days=REBALANCE.min_holding_trading_days,
+    )
     target_weights = {}
     if PORTFOLIO.weighting == "score_weighted":
         target_weights = compute_score_weights(

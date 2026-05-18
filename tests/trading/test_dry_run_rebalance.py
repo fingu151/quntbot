@@ -59,6 +59,23 @@ def _client() -> MagicMock:
     return client
 
 
+def _write_exit_state(path: Path, *, ticker: str = "OLD", entry_date: str = "2026-05-06") -> None:
+    path.write_text(
+        json.dumps(
+            {
+                ticker: {
+                    "ticker": ticker,
+                    "entry_price": 10000,
+                    "original_qty": 3,
+                    "entry_date": entry_date,
+                    "last_updated": f"{entry_date}T00:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_parse_args_accepts_dry_run_options():
     import scripts.dry_run_rebalance as dry_run
 
@@ -99,8 +116,20 @@ def test_parse_args_accepts_latest_db_price_fallback():
 def test_run_prints_and_writes_rebalance_report_without_orders(tmp_path, capsys):
     import scripts.dry_run_rebalance as dry_run
 
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "OLD", "date": date(2026, 5, 7), "close": 12000},
+                {"ticker": "OLD", "date": date(2026, 5, 8), "close": 12000},
+            ],
+        )
     client = _client()
     report_path = tmp_path / "dry_run.md"
+    exit_state_path = tmp_path / "exit_state.json"
+    _write_exit_state(exit_state_path)
     args = dry_run.parse_args([
         "--as-of-date",
         "2026-05-08",
@@ -108,14 +137,15 @@ def test_run_prints_and_writes_rebalance_report_without_orders(tmp_path, capsys)
         "1",
         "--output-md",
         str(report_path),
+        "--exit-state-path",
+        str(exit_state_path),
     ])
 
     result = dry_run.run(
         args,
-        db_engine="db-engine",
+        db_engine=engine,
         client_factory=MagicMock(return_value=client),
         score_func=MagicMock(return_value=[_score("NEW", 1)]),
-        create_tables_func=MagicMock(),
     )
 
     output = capsys.readouterr().out
@@ -131,6 +161,73 @@ def test_run_prints_and_writes_rebalance_report_without_orders(tmp_path, capsys)
     assert "| 1 | NEW | Stock NEW | 9.0000 | 15.00% |" in report
     client.get_balance.assert_called_once()
     client.get_holdings.assert_not_called()
+    client.place_order.assert_not_called()
+
+
+def test_run_blocks_rebalance_sell_when_entry_state_is_missing(capsys):
+    import scripts.dry_run_rebalance as dry_run
+
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    client = _client()
+    args = dry_run.parse_args([
+        "--as-of-date",
+        "2026-05-08",
+        "--top-n",
+        "1",
+        "--exit-state-path",
+        str(Path("missing_exit_state.json")),
+    ])
+
+    result = dry_run.run(
+        args,
+        db_engine=engine,
+        client_factory=MagicMock(return_value=client),
+        score_func=MagicMock(return_value=[_score("NEW", 1)]),
+    )
+
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "SELL,OLD" not in output
+    client.place_order.assert_not_called()
+
+
+def test_run_blocks_rebalance_sell_until_min_holding_days(tmp_path, capsys):
+    import scripts.dry_run_rebalance as dry_run
+
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "OLD", "date": date(2026, 5, 8), "close": 12000},
+            ],
+        )
+    client = _client()
+    exit_state_path = tmp_path / "exit_state.json"
+    _write_exit_state(exit_state_path, entry_date="2026-05-07")
+    args = dry_run.parse_args([
+        "--as-of-date",
+        "2026-05-08",
+        "--top-n",
+        "1",
+        "--exit-state-path",
+        str(exit_state_path),
+    ])
+
+    result = dry_run.run(
+        args,
+        db_engine=engine,
+        client_factory=MagicMock(return_value=client),
+        score_func=MagicMock(return_value=[_score("NEW", 1)]),
+    )
+
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "SELL,OLD" not in output
     client.place_order.assert_not_called()
 
 
@@ -253,7 +350,7 @@ def test_run_uses_latest_db_close_when_quote_fails_and_fallback_enabled(capsys):
 
     assert result == 0
     assert "price_fallback,NEW,10000" in output
-    assert "BUY,NEW,2" in output
+    assert "BUY,NEW,1" in output
     client.place_order.assert_not_called()
 
 
@@ -287,7 +384,7 @@ def test_run_retries_quote_lookup_before_fallback(capsys):
     output = capsys.readouterr().out
 
     assert result == 0
-    assert "BUY,NEW,2" in output
+    assert "BUY,NEW,1" in output
     assert "price_lookup_failed,NEW" not in output
     assert client.get_current_price.call_count == 2
     sleeper.assert_called_once_with(0.25)
@@ -419,8 +516,20 @@ def test_run_records_skipped_buy_when_current_price_gap_is_too_large(tmp_path, c
 def test_run_writes_machine_readable_json_report(tmp_path):
     import scripts.dry_run_rebalance as dry_run
 
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "OLD", "date": date(2026, 5, 7), "close": 12000},
+                {"ticker": "OLD", "date": date(2026, 5, 8), "close": 12000},
+            ],
+        )
     client = _client()
     report_path = tmp_path / "dry_run.json"
+    exit_state_path = tmp_path / "exit_state.json"
+    _write_exit_state(exit_state_path)
     args = dry_run.parse_args([
         "--as-of-date",
         "2026-05-08",
@@ -428,14 +537,15 @@ def test_run_writes_machine_readable_json_report(tmp_path):
         "1",
         "--output-json",
         str(report_path),
+        "--exit-state-path",
+        str(exit_state_path),
     ])
 
     result = dry_run.run(
         args,
-        db_engine="db-engine",
+        db_engine=engine,
         client_factory=MagicMock(return_value=client),
         score_func=MagicMock(return_value=[_score("NEW", 1)]),
-        create_tables_func=MagicMock(),
     )
 
     payload = json.loads(report_path.read_text(encoding="utf-8"))

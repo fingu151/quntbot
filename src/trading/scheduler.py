@@ -18,8 +18,10 @@ from src.signals.busanstock_reader import fetch_and_store_busanstock_signals
 from src.signals.research_report_reader import fetch_and_store_korean_research_reports
 from src.signals.telegram_reader import fetch_and_store_signals
 from src.factors.engine import calculate_factor_scores
+from src.trading.allocation import compute_score_weights
 from src.trading.engine import TradingEngine
 from src.trading.kis_client import KisClient
+from src.trading.rebalance_policy import compute_rebalance_sell_eligible_tickers
 from src.trading.rebalancer import compute_rebalance_orders, execute_rebalance
 
 
@@ -132,9 +134,9 @@ def _rebalance_job(
             logger.error("Daily loss limit exceeded. Rebalance skipped.")
             return
 
-        triggered = engine.check_stop_loss()
+        triggered = engine.check_exit_rules()
         if triggered:
-            logger.warning(f"Stop-loss sells executed before rebalance: {triggered}")
+            logger.warning(f"Exit sells executed before rebalance: {triggered}")
 
         logger.info("Calculating factor scores...")
         scores = score_func(db_engine, as_of_date=run_date)
@@ -144,7 +146,10 @@ def _rebalance_job(
         logger.info(f"Factor scoring complete: {len(scores)} tickers")
 
         top_n = PORTFOLIO.n_holdings
-        target_tickers = [s.ticker for s in scores[:top_n]]
+        target_scores = scores[:top_n]
+        buffer_scores = scores[:max(top_n, REBALANCE.sell_rank_buffer)]
+        target_tickers = [s.ticker for s in target_scores]
+        buffer_tickers = {s.ticker for s in buffer_scores}
         logger.info(f"Target portfolio {top_n} tickers: {target_tickers[:5]}...")
 
         holdings = engine.get_holdings()
@@ -169,6 +174,22 @@ def _rebalance_job(
             buy_targets,
             as_of_date=run_date,
         )
+        entry_dates = engine.get_exit_state_entry_dates()
+        sell_eligible_tickers = compute_rebalance_sell_eligible_tickers(
+            holdings=holdings,
+            buffer_tickers=buffer_tickers,
+            entry_dates=entry_dates,
+            db_engine=db_engine,
+            as_of_date=run_date,
+            min_holding_trading_days=REBALANCE.min_holding_trading_days,
+        )
+        target_weights = {}
+        if PORTFOLIO.weighting == "score_weighted":
+            target_weights = compute_score_weights(
+                [(score.ticker, score.total_score) for score in target_scores],
+                min_weight=PORTFOLIO.min_position_weight,
+                max_weight=PORTFOLIO.max_position_weight,
+            )
 
         sells, buys = compute_rebalance_orders(
             holdings=holdings,
@@ -176,6 +197,8 @@ def _rebalance_job(
             prices=prices,
             previous_closes=previous_closes,
             cash=cash,
+            sell_eligible_tickers=sell_eligible_tickers,
+            target_weights=target_weights,
         )
         preflight_report_path = (
             REBALANCE.dry_run_preflight_report_path

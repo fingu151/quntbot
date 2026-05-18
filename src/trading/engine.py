@@ -413,6 +413,18 @@ class TradingEngine:
     def get_current_price(self, ticker: str) -> dict[str, Any]:
         return self._client.get_current_price(ticker)
 
+    def get_exit_state_entry_dates(self) -> dict[str, date]:
+        entry_dates: dict[str, date] = {}
+        for ticker, state in self._exit_state_store.load().items():
+            try:
+                entry_dates[ticker] = date.fromisoformat(state.entry_date)
+            except ValueError:
+                logger.warning(
+                    f"exit state entry date ignored: ticker={ticker}, "
+                    f"entry_date={state.entry_date}"
+                )
+        return entry_dates
+
     @property
     def status(self) -> dict[str, Any]:
         """현재 엔진 상태 스냅샷."""
