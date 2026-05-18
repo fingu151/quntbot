@@ -280,6 +280,56 @@ def test_check_exit_rules_prunes_zero_qty_holding_state(tmp_path):
     engine._client.place_order.assert_not_called()
 
 
+def test_check_exit_rules_preserves_profit_take_state_when_price_is_missing(tmp_path):
+    engine = _make_engine(stop_loss_pct=-0.05)
+    exit_state_path = tmp_path / "exit_state.json"
+    engine._exit_state_store = ExitStateStore(exit_state_path)
+    exit_state_path.write_text(
+        json.dumps(
+            {
+                "005930": {
+                    "ticker": "005930",
+                    "entry_price": 100_000,
+                    "original_qty": 10,
+                    "entry_date": "2026-05-19",
+                    "profit_take_done": True,
+                    "trailing_qty": 2,
+                    "breakeven_qty": 3,
+                    "peak_price": 130_000,
+                    "last_updated": "2026-05-19T00:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 5,
+            "avg_price": 100_000,
+            "current_price": 0,
+        }
+    ]
+
+    assert engine.check_exit_rules() == []
+    assert engine._exit_state_store.load()["005930"].profit_take_done is True
+
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 5,
+            "avg_price": 100_000,
+            "current_price": 121_000,
+        }
+    ]
+
+    assert engine.check_exit_rules() == []
+    engine._client.place_order.assert_not_called()
+    assert engine._exit_state_store.load()["005930"].profit_take_done is True
+
+
 def test_check_exit_rules_same_price_rebuy_after_completed_exit_is_fresh(tmp_path):
     engine = _make_engine(stop_loss_pct=-0.05)
     exit_state_path = tmp_path / "exit_state.json"

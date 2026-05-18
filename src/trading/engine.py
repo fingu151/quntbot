@@ -252,17 +252,22 @@ class TradingEngine:
 
         triggered: list[str] = []
         holdings = self._client.get_holdings()
-        active_holdings = [
+        held_tickers = {
+            h["ticker"]
+            for h in holdings
+            if int(h.get("qty", 0) or 0) > 0
+        }
+        self._exit_state_store.prune(held_tickers)
+
+        processable_holdings = [
             h
             for h in holdings
             if int(h.get("qty", 0) or 0) > 0
             and float(h.get("avg_price", 0) or 0) > 0
             and float(h.get("current_price", 0) or 0) > 0
         ]
-        active_tickers = {h["ticker"] for h in active_holdings}
-        self._exit_state_store.prune(active_tickers)
 
-        for h in active_holdings:
+        for h in processable_holdings:
             ticker = h["ticker"]
             name = h.get("name", ticker)
             qty = int(h.get("qty", 0) or 0)
