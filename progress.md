@@ -3500,6 +3500,7 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 - Updated daily loss-limit behavior:
   - `-3%` daily loss now blocks new buys only;
   - sell orders, staged exits, stop exits, and rebalance risk-reduction sells remain active;
+  - daily loss-limit lookup failures no longer block staged exit checks; the cycle continues with buys suppressed;
   - scheduled rebalance runs sell-only when the daily loss limit is active;
   - sell-only rebalance ignores buy-side dry-run quote failures and buy-count preflight limits while keeping stale-report and sell-limit gates.
 - Implemented staged exits:
@@ -3526,7 +3527,7 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 
 ### Verification
 
-- Trading/backtest tests: `.\venv\Scripts\python.exe -m pytest tests\trading tests\backtest -q` -> 239 passed.
+- Trading/backtest tests: `.\venv\Scripts\python.exe -m pytest tests\trading tests\backtest -q` -> 241 passed.
 - Syntax check: `.\venv\Scripts\python.exe -m compileall src scripts tests` -> passed.
 - Backtest matrix: `.\venv\Scripts\python.exe scripts\run_backtest_matrix.py --top-ns 20 --rebalance-frequencies weekly --cost-scenarios custom --stop-loss-pct -0.05 --trailing-stop-pct -0.10 --profit-take-pct 0.20 --profit-take-sell-fraction 0.50 --sell-rank-buffer 30 --min-holding-trading-days 2 --weighting score_weighted --output-csv data\backtest_exit_rebalance_strategy_2026-05-19.csv --output-md data\backtest_exit_rebalance_strategy_2026-05-19.md` -> final equity `113,428,859.46`, total return `13.43%`, max drawdown `-20.28%`, Sharpe `0.4742`, win rate `44.84%`, average holding days `33.65`, trade count `831`.
 - No-order dry-run: `.\venv\Scripts\python.exe scripts\dry_run_rebalance.py --as-of-date 2026-05-19 --top-n 20 --output-json data\dry_run_rebalance_latest.json --output-md data\dry_run_rebalance_latest.md --quote-retries 4 --quote-delay-sec 0.5` -> `sell_count=0`, `buy_count=0`, `price_lookup_failed_count=0`, `price_fallback_count=0`, `price_retry_success_count=7`, `price_retry_failed_count=0`, `orders_submitted=0` by dry-run design.

@@ -130,12 +130,7 @@ def _rebalance_job(
         return
 
     try:
-        risk_off_sell_only = engine.check_daily_loss_limit()
-        if risk_off_sell_only:
-            logger.error(
-                "Daily loss limit exceeded. Rebalance will run sell-only."
-            )
-
+        risk_off_sell_only = _check_daily_loss_limit_or_continue(engine)
         triggered = engine.check_exit_rules()
         if triggered:
             logger.warning(f"Exit sells executed before rebalance: {triggered}")
@@ -162,7 +157,9 @@ def _rebalance_job(
 
         prices: dict[str, int] = {}
         held_tickers = {h["ticker"] for h in holdings}
-        buy_targets = [ticker for ticker in target_tickers if ticker not in held_tickers]
+        buy_targets = [] if risk_off_sell_only else [
+            ticker for ticker in target_tickers if ticker not in held_tickers
+        ]
         for ticker in buy_targets:
             try:
                 resp = engine.get_current_price(ticker)
@@ -195,12 +192,12 @@ def _rebalance_job(
 
         sells, buys = compute_rebalance_orders(
             holdings=holdings,
-            target_tickers=target_tickers,
+            target_tickers=[] if risk_off_sell_only else target_tickers,
             prices=prices,
             previous_closes=previous_closes,
             cash=cash,
             sell_eligible_tickers=sell_eligible_tickers,
-            target_weights=target_weights,
+            target_weights={} if risk_off_sell_only else target_weights,
         )
         if risk_off_sell_only:
             logger.warning("Risk-off mode active: rebalance buys suppressed.")
@@ -274,16 +271,30 @@ def _research_report_job(
 
 def _stop_loss_job(engine: TradingEngine) -> None:
     """Intraday staged exit monitor."""
+    _check_daily_loss_limit_or_continue(engine)
     try:
-        if engine.check_daily_loss_limit():
-            logger.error(
-                "Daily loss limit exceeded. New buys are halted; exits remain active."
-            )
         triggered = engine.check_exit_rules()
         if triggered:
             logger.warning(f"[Intraday exits] sells executed: {triggered}")
     except Exception as exc:
         logger.exception(f"Exit monitor failed: {exc}")
+
+
+def _check_daily_loss_limit_or_continue(engine: TradingEngine) -> bool:
+    try:
+        risk_off_sell_only = engine.check_daily_loss_limit()
+    except Exception as exc:
+        logger.warning(
+            "Daily loss limit check failed; continuing exit monitor. "
+            f"New buys stay suppressed for this cycle. error={exc}"
+        )
+        return True
+
+    if risk_off_sell_only:
+        logger.error(
+            "Daily loss limit exceeded. New buys are halted; exits remain active."
+        )
+    return risk_off_sell_only
 
 
 def _split_hhmm(value: str) -> tuple[int, int]:
