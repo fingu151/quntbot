@@ -20,17 +20,17 @@ management:
 - Move from fixed equal cash allocation toward score-weighted allocation with
   explicit concentration limits.
 
-## Current Baseline
+## Current Operating Baseline
 
-The current baseline uses:
+The current operating baseline uses:
 
-- Stop loss: sell all at `-8%` from entry.
+- Stop loss: sell all at `-7%` from entry.
 - Trailing stop: sell all at `-10%` from post-entry peak.
 - Rebalance frequency: weekly.
-- Rebalance sell rule: sell held tickers that are no longer in the target list.
+- Rebalance sell rule: sell held tickers outside the top `30` buffer after the
+  minimum holding period.
 - Target holdings: `20`.
-- Current config includes `weighting = "equal"` and a dormant
-  `score_weighted` option.
+- Current config uses `weighting = "score_weighted"`.
 
 ## New Exit Strategy
 
@@ -39,7 +39,7 @@ The current baseline uses:
 For each open position, track an exit state. Before any profit-taking has
 occurred:
 
-- If current return from average entry price is `<= -5%`, sell the full
+- If current return from average entry price is `<= -7%`, sell the full
   position.
 - If current return from average entry price is `>= +20%`, sell `50%` of the
   current position and mark first profit-taking as completed.
@@ -81,7 +81,7 @@ Recommended rounding policy:
 
 For a single monitoring pass, evaluate exits in this order:
 
-1. Full stop loss before profit-taking: `-5%`.
+1. Full stop loss before profit-taking: `-7%`.
 2. First profit take: `+20%`.
 3. Post-profit-take trailing bucket.
 4. Post-profit-take breakeven bucket.
@@ -109,7 +109,7 @@ Add a `2` trading-day minimum holding period for rebalance exits:
   held for at least `2` trading days.
 - The minimum holding period only blocks rebalance exits.
 - Risk exits and profit exits still run during the minimum holding period:
-  `-5%` stop, `+20%` first profit take, post-profit trailing, and breakeven.
+  `-7%` stop, `+20%` first profit take, post-profit trailing, and breakeven.
 
 ## New Allocation Strategy
 
@@ -232,7 +232,7 @@ with code and data inspection:
 
 ## Acceptance Criteria
 
-- Tests prove `-5%` stop sells the full pre-profit position.
+- Tests prove the configured stop sells the full pre-profit position.
 - Tests prove `+20%` first profit take sells only once.
 - Tests prove post-profit trailing bucket and breakeven bucket can exit
   independently.

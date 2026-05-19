@@ -237,7 +237,7 @@ PORTFOLIO = PortfolioConfig()
 @dataclass(frozen=True)
 class ExitRulesConfig:
     # 손절: 매수가 대비 -X% 도달 시 즉시 시장가 매도
-    stop_loss_pct: float = -0.05   # -5%
+    stop_loss_pct: float = -0.07   # -7%
 
     # 트레일링 스톱: 보유 후 최고가 대비 -X% 하락 시 매도
     trailing_stop_pct: float = -0.10  # -10%
