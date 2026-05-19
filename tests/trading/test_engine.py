@@ -163,6 +163,40 @@ def test_buy_raises_when_halted():
         engine.buy("005930", qty=1)
 
 
+def test_sell_is_allowed_when_daily_loss_limit_halted():
+    engine = _make_engine()
+    engine._halted = True
+
+    result = engine.sell("005930", qty=1)
+
+    assert result["rt_cd"] == "0"
+    engine._client.place_order.assert_called_once_with(
+        "005930", qty=1, price=0, side="SELL"
+    )
+
+
+def test_exit_rules_are_allowed_when_daily_loss_limit_halted(tmp_path):
+    engine = _make_engine(stop_loss_pct=-0.05)
+    engine._halted = True
+    engine._exit_state_store = ExitStateStore(tmp_path / "exit_state.json")
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 5,
+            "avg_price": 100_000,
+            "current_price": 94_000,
+        }
+    ]
+
+    triggered = engine.check_exit_rules()
+
+    assert triggered == ["005930"]
+    engine._client.place_order.assert_called_once_with(
+        "005930", qty=5, price=0, side="SELL"
+    )
+
+
 # ------------------------------------------------------------------
 # 손절 테스트
 # ------------------------------------------------------------------

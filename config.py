@@ -303,7 +303,7 @@ class SafetyConfig:
     max_daily_buys: int = 10
     max_daily_sells: int = 10
 
-    # 일일 손실 한도 도달 시 당일 모든 매매 중단
+    # 일일 손실 한도 도달 시 신규 매수 중단. 위험 축소용 매도는 계속 허용한다.
     daily_loss_limit_pct: float = -0.03  # -3%
 
     # 체결 실패 시 재시도 횟수

@@ -130,9 +130,11 @@ def _rebalance_job(
         return
 
     try:
-        if engine.check_daily_loss_limit():
-            logger.error("Daily loss limit exceeded. Rebalance skipped.")
-            return
+        risk_off_sell_only = engine.check_daily_loss_limit()
+        if risk_off_sell_only:
+            logger.error(
+                "Daily loss limit exceeded. Rebalance will run sell-only."
+            )
 
         triggered = engine.check_exit_rules()
         if triggered:
@@ -200,6 +202,9 @@ def _rebalance_job(
             sell_eligible_tickers=sell_eligible_tickers,
             target_weights=target_weights,
         )
+        if risk_off_sell_only:
+            logger.warning("Risk-off mode active: rebalance buys suppressed.")
+            buys = []
         preflight_report_path = (
             REBALANCE.dry_run_preflight_report_path
             if REBALANCE.require_dry_run_preflight
@@ -211,6 +216,7 @@ def _rebalance_job(
             buys,
             preflight_report_path=preflight_report_path,
             expected_preflight_date=run_date,
+            allow_buys=not risk_off_sell_only,
         )
 
         logger.info(f"Engine status: {engine.status}")
@@ -270,8 +276,9 @@ def _stop_loss_job(engine: TradingEngine) -> None:
     """Intraday staged exit monitor."""
     try:
         if engine.check_daily_loss_limit():
-            logger.error("Daily loss limit exceeded. Trading is halted today.")
-            return
+            logger.error(
+                "Daily loss limit exceeded. New buys are halted; exits remain active."
+            )
         triggered = engine.check_exit_rules()
         if triggered:
             logger.warning(f"[Intraday exits] sells executed: {triggered}")

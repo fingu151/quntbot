@@ -39,7 +39,7 @@ class TradingEngine:
         self._today: date = date.today()
         self._daily_buys: int = 0
         self._daily_sells: int = 0
-        self._halted: bool = False   # 일일 손실 한도 초과 시 True
+        self._halted: bool = False   # 일일 손실 한도 초과 시 신규 매수 차단
         self._daily_start_equity: int | None = None
         self._daily_anchor_path = daily_anchor_path or (DATA_DIR / "daily_anchor.json")
         self._exit_state_store = ExitStateStore(
@@ -62,9 +62,9 @@ class TradingEngine:
             self._daily_start_equity = None
             logger.info("일일 카운터 초기화 (새 날짜)")
 
-    def _check_halted(self) -> None:
+    def _check_buy_halted(self) -> None:
         if self._halted:
-            raise RuntimeError("일일 손실 한도 초과로 당일 매매가 중단되었습니다.")
+            raise RuntimeError("일일 손실 한도 초과로 당일 신규 매수가 중단되었습니다.")
 
     # ------------------------------------------------------------------
     # 공개 주문 인터페이스
@@ -108,7 +108,7 @@ class TradingEngine:
             name:   종목명 (알림용). 없으면 ticker로 표시.
         """
         self._reset_if_new_day()
-        self._check_halted()
+        self._check_buy_halted()
 
         if self._daily_buys >= self._safety.max_daily_buys:
             raise RuntimeError(
@@ -133,7 +133,6 @@ class TradingEngine:
             name:   종목명 (알림용). 없으면 ticker로 표시.
         """
         self._reset_if_new_day()
-        self._check_halted()
 
         if self._daily_sells >= self._safety.max_daily_sells:
             raise RuntimeError(
@@ -162,7 +161,6 @@ class TradingEngine:
             손절 매도가 실행된 종목코드 리스트
         """
         self._reset_if_new_day()
-        self._check_halted()
 
         triggered = []
         holdings = self._client.get_holdings()
@@ -202,7 +200,6 @@ class TradingEngine:
             트레일링 스톱 매도가 실행된 종목코드 리스트
         """
         self._reset_if_new_day()
-        self._check_halted()
 
         triggered = []
         exclude_tickers = exclude_tickers or set()
@@ -248,7 +245,6 @@ class TradingEngine:
     def check_exit_rules(self) -> list[str]:
         """Run the staged PAPER exit monitor for current holdings."""
         self._reset_if_new_day()
-        self._check_halted()
 
         triggered: list[str] = []
         holdings = self._client.get_holdings()
@@ -367,10 +363,10 @@ class TradingEngine:
     def check_daily_loss_limit(self) -> bool:
         """당일 계좌 수익률이 손실 한도를 초과했는지 확인한다.
 
-        손실 한도 초과 시 self._halted=True 로 설정해 이후 주문을 모두 차단한다.
+        손실 한도 초과 시 self._halted=True 로 설정해 신규 매수만 차단한다.
 
         Returns:
-            True: 한도 초과(매매 중단), False: 정상
+            True: 한도 초과(신규 매수 중단), False: 정상
         """
         balance = self._client.get_balance()
         output2 = (balance.get("output2") or [{}])[0]
@@ -393,7 +389,7 @@ class TradingEngine:
         if daily_pnl_rate <= self._safety.daily_loss_limit_pct:
             logger.error(
                 f"[긴급] 일일 손실 한도 초과: {daily_pnl_rate:.2%} "
-                f"(한도 {self._safety.daily_loss_limit_pct:.2%}). 당일 매매 중단."
+                f"(한도 {self._safety.daily_loss_limit_pct:.2%}). 당일 신규 매수 중단."
             )
             self._halted = True
             self._notifier.notify_daily_loss_halt(daily_pnl_rate)

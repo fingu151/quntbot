@@ -5,6 +5,7 @@ from src.data.database import create_tables, get_engine, session_scope
 from src.data.repositories import upsert_daily_prices
 from src.factors.models import FactorScore
 from src.trading import scheduler
+from src.trading.rebalancer import RebalanceOrder
 
 
 def test_pre_market_sync_job_records_success_for_today():
@@ -271,6 +272,53 @@ def test_rebalance_job_applies_buffer_min_holding_and_target_weights():
     assert compute.call_args.kwargs["target_weights"] == {"TARGET": 0.15}
 
 
+def test_rebalance_job_runs_sell_only_when_daily_loss_limit_triggered():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = True
+    engine.check_exit_rules.return_value = []
+    engine.get_holdings.return_value = []
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "100000"}]}
+    engine.get_current_price.return_value = {"rt_cd": "0", "output": {"stck_prpr": "10000"}}
+    engine.get_exit_state_entry_dates.return_value = {}
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
+    score = FactorScore(
+        ticker="005930",
+        name="Samsung",
+        market="KOSPI",
+        as_of_date=date(2026, 5, 6),
+        value_score=1.0,
+        quality_score=1.0,
+        momentum_score=1.0,
+        yield_score=1.0,
+        telegram_score=0.0,
+        total_score=1.0,
+        rank=1,
+    )
+    sells = [RebalanceOrder("OLD", "SELL", 1, "risk reduction")]
+    buys = [RebalanceOrder("005930", "BUY", 1, "target entry")]
+    compute = MagicMock(return_value=(sells, buys))
+    execute = MagicMock(return_value={"sold": ["OLD"], "bought": [], "failed": []})
+
+    with (
+        patch.object(scheduler, "_get_previous_closes", MagicMock(return_value={})),
+        patch.object(scheduler, "compute_rebalance_orders", compute),
+        patch.object(scheduler, "execute_rebalance", execute),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine="db-engine",
+            sync_state=state,
+            today=date(2026, 5, 6),
+            score_func=MagicMock(return_value=[score]),
+        )
+
+    engine.check_exit_rules.assert_called_once()
+    execute.assert_called_once()
+    assert execute.call_args.args[1] == sells
+    assert execute.call_args.args[2] == []
+    assert execute.call_args.kwargs["allow_buys"] is False
+
+
 def test_run_scheduler_registers_pre_market_sync_before_rebalance():
     fake_scheduler = MagicMock()
     fake_scheduler.start.side_effect = KeyboardInterrupt
@@ -347,6 +395,17 @@ def test_stop_loss_job_uses_generalized_exit_monitor():
     engine.check_exit_rules.assert_called_once()
     engine.check_stop_loss.assert_not_called()
     engine.check_trailing_stop.assert_not_called()
+
+
+def test_stop_loss_job_runs_exit_monitor_when_daily_loss_limit_triggered():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = True
+    engine.check_exit_rules.return_value = ["005930"]
+
+    scheduler._stop_loss_job(engine)
+
+    engine.check_daily_loss_limit.assert_called_once()
+    engine.check_exit_rules.assert_called_once()
 
 
 def test_run_scheduler_uses_research_report_poll_window():

@@ -330,3 +330,69 @@ def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp
         )
 
     engine.buy.assert_not_called()
+
+
+def test_execute_rebalance_sell_only_ignores_preflight_buy_count(tmp_path):
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0"}
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 11,
+            "sell_count": 1,
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+        }),
+        encoding="utf-8",
+    )
+
+    result = execute_rebalance(
+        engine,
+        [RebalanceOrder("005930", "SELL", 1, "risk reduction")],
+        [RebalanceOrder("000660", "BUY", 1, "include")],
+        preflight_report_path=report_path,
+        expected_preflight_date=date(2026, 5, 8),
+        allow_buys=False,
+    )
+
+    assert result["sold"] == ["005930"]
+    assert result["bought"] == []
+    engine.sell.assert_called_once()
+    engine.buy.assert_not_called()
+
+
+def test_execute_rebalance_sell_only_ignores_buy_price_preflight_failures(tmp_path):
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0"}
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 1,
+            "sell_count": 1,
+            "price_fallback_count": 1,
+            "price_lookup_failed_count": 1,
+            "price_fallbacks": [{"ticker": "000660", "price": 10000, "source": "latest-db"}],
+            "price_lookup_failures": ["000270"],
+        }),
+        encoding="utf-8",
+    )
+
+    result = execute_rebalance(
+        engine,
+        [RebalanceOrder("005930", "SELL", 1, "risk reduction")],
+        [RebalanceOrder("000660", "BUY", 1, "include")],
+        preflight_report_path=report_path,
+        expected_preflight_date=date(2026, 5, 8),
+        allow_buys=False,
+    )
+
+    assert result["sold"] == ["005930"]
+    assert result["bought"] == []
+    engine.sell.assert_called_once()
+    engine.buy.assert_not_called()

@@ -135,6 +135,7 @@ def execute_rebalance(
     *,
     preflight_report_path: str | Path | None = None,
     expected_preflight_date: date | None = None,
+    allow_buys: bool = True,
 ) -> dict[str, list[str]]:
     """compute_rebalance_orders 결과를 TradingEngine을 통해 실제 주문으로 실행한다.
 
@@ -152,9 +153,13 @@ def execute_rebalance(
         _assert_preflight_report_allows_orders(
             preflight_report_path,
             expected_preflight_date=expected_preflight_date,
+            enforce_buy_limit=allow_buys,
+            enforce_buy_price_checks=allow_buys,
         )
 
     result: dict[str, list[str]] = {"sold": [], "bought": [], "failed": []}
+    if not allow_buys:
+        buys = []
 
     # 매도 먼저
     for order in sells:
@@ -195,6 +200,8 @@ def _assert_preflight_report_allows_orders(
     report_path: str | Path,
     *,
     expected_preflight_date: date | None = None,
+    enforce_buy_limit: bool = True,
+    enforce_buy_price_checks: bool = True,
 ) -> None:
     path = Path(report_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -210,7 +217,7 @@ def _assert_preflight_report_allows_orders(
             )
 
     fallback_count = int(payload.get("price_fallback_count", 0) or 0)
-    if fallback_count:
+    if enforce_buy_price_checks and fallback_count:
         tickers = [
             str(item.get("ticker", ""))
             for item in payload.get("price_fallbacks", [])
@@ -222,7 +229,7 @@ def _assert_preflight_report_allows_orders(
         )
 
     failed_count = int(payload.get("price_lookup_failed_count", 0) or 0)
-    if failed_count:
+    if enforce_buy_price_checks and failed_count:
         tickers = [str(ticker) for ticker in payload.get("price_lookup_failures", [])]
         suffix = f" tickers={tickers}" if tickers else ""
         raise RuntimeError(
@@ -230,7 +237,7 @@ def _assert_preflight_report_allows_orders(
         )
 
     buy_count = int(payload.get("buy_count", 0) or 0)
-    if buy_count > SAFETY.max_daily_buys:
+    if enforce_buy_limit and buy_count > SAFETY.max_daily_buys:
         raise RuntimeError(
             "dry-run preflight blocked: daily buy limit would be exceeded "
             f"({buy_count}/{SAFETY.max_daily_buys})"
