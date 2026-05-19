@@ -13,6 +13,7 @@ from src.data.models import (
     DailyPrice,
     Fundamental,
     InvestorFlow,
+    MarketIndexPrice,
     QualityMetric,
     ResearchReportAnalysis,
     ResearchReportBrief,
@@ -99,6 +100,16 @@ def upsert_daily_prices(session: Session, rows: Iterable[dict[str, Any]]) -> int
             "trading_value",
             "market_cap",
         ],
+    )
+
+
+def upsert_market_index_prices(session: Session, rows: Iterable[dict[str, Any]]) -> int:
+    return _upsert_many(
+        session,
+        MarketIndexPrice,
+        rows,
+        conflict_columns=["symbol", "date"],
+        update_columns=["open", "high", "low", "close", "volume"],
     )
 
 

@@ -3541,6 +3541,65 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 - The dry-run reported cash `-708,536` KRW, so weighted buy budgets were negative and all incremental buys were skipped; no rebalance orders were planned.
 - Pytest emitted a non-failing Windows temp cleanup `PermissionError` after several successful runs.
 
+## 2026-05-19 30-Stock Risk Overlay Backtest Evidence
+
+### Completed
+
+- Expanded the backtest/default portfolio target from `20` to `30` holdings.
+- Kept the full stop at `-7%` and added a `3` calendar-day same-ticker cooldown after full stop exits.
+- Added ATR volatility stop support to the backtest path:
+  - ATR window `14`;
+  - ATR multiplier `2.5`;
+  - the pre-profit position exits when either `-7%` full stop or ATR stop is hit first.
+- Added market-risk overlay support to the backtest path:
+  - KOSPI/KOSDAQ RSI(14) >= `75` raises target cash;
+  - one overheated market -> `15%` target cash;
+  - both overheated markets -> `25%` target cash;
+  - prior Nasdaq drop <= `-2.0%` -> `20%` target cash;
+  - prior Nasdaq drop <= `-3.5%` -> `35%` target cash;
+  - rebalance-day exposure is reduced pro-rata when cash is below the target.
+- Added `market_index_prices` storage and `scripts/sync_market_indices.py` for real KOSPI/KOSDAQ/NASDAQ index data.
+- Synced real historical data:
+  - `daily_prices`: `698,180` rows, `2020-01-02` to `2026-05-19`, `627` tickers;
+  - `fundamentals`: `693,599` rows, `2020-01-02` to `2026-05-19`, `625` tickers;
+  - `market_index_prices`: `4,732` rows, `2020-01-02` to `2026-05-19`, `3` symbols;
+  - `quality_metrics`: `3,919` rows, published `2024-05-07` to `2026-05-08`, `507` tickers.
+
+### Verification
+
+- TDD red check: `.\venv\Scripts\python.exe -m pytest tests\backtest\test_backtest_engine.py -q` failed before market-index repository/engine support existed.
+- Targeted tests and repository/script coverage: `.\venv\Scripts\python.exe -m pytest tests\backtest\test_backtest_engine.py tests\backtest\test_run_script.py tests\backtest\test_run_matrix_script.py tests\data\test_repositories.py tests\data\test_sync_market_indices.py -q` -> 73 passed.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall src scripts tests` -> passed.
+- Market index sync: `.\venv\Scripts\python.exe scripts\sync_market_indices.py --start-date 2020-01-01 --end-date 2026-05-19` -> `row_count=4732`.
+- Phase 1 price/fundamental sync:
+  - 2023 -> `price_count=111,815`, `fundamental_count=111,244`;
+  - 2022 -> `price_count=108,320`, `fundamental_count=107,828`;
+  - 2021 -> `price_count=105,737`, `fundamental_count=105,206`;
+  - 2020 -> `price_count=101,481`, `fundamental_count=100,555`.
+- Official quality-gated backtest window is `2024-05-16` to `2026-05-19`, because earlier dates have `quality_coverage_critical` and the buy filter correctly skips buy candidates instead of faking missing DART data.
+- New overlay result: `.\venv\Scripts\python.exe scripts\run_backtest_matrix.py --start-date 2024-05-16 --end-date 2026-05-19 --top-ns 30 --rebalance-frequencies weekly --cost-scenarios custom ... --enable-atr-stop --enable-market-risk-overlay` -> final equity `175,646,610.74`, total return `75.65%`, CAGR `32.38%`, max drawdown `-13.13%`, Sharpe `1.5220`, win rate `52.93%`, average holding days `28.88`, trade count `1,963`.
+- Baseline comparison without ATR and market overlay: final equity `188,728,144.81`, total return `88.73%`, CAGR `37.20%`, max drawdown `-13.67%`, Sharpe `1.6140`, win rate `53.45%`, trade count `1,916`.
+- Cost stress with the new overlay:
+  - custom cost -> total return `75.65%`, max drawdown `-13.13%`, Sharpe `1.5220`;
+  - slippage20 -> total return `65.67%`, max drawdown `-15.80%`, Sharpe `1.3697`;
+  - slippage30 -> total return `58.21%`, max drawdown `-18.05%`, Sharpe `1.2521`.
+- New overlay trade reasons:
+  - buys `854`, sells `1,109`;
+  - `stop_loss` `230`, `stop_loss_close_fallback` `2`;
+  - `atr_stop` `39`;
+  - `profit_take_20` `151`;
+  - `post_profit_trailing_stop` `100`, `post_profit_trailing_stop_close_fallback` `4`;
+  - `post_profit_breakeven_stop` `23`;
+  - `market_risk_reduce` `29`, all on `2025-10-13`;
+  - `rebalance` `531`.
+- Worst drawdown path for the new overlay: peak `102,451,275.36` on `2024-07-16`, trough `88,999,662.37` on `2025-04-07`, drawdown `-13.13%`.
+
+### Notes
+
+- The market overlay reduced MDD by `0.54pp` versus the no-overlay/no-ATR comparison, but it also reduced total return by `13.08pp`; this is a defense trade-off, not a free improvement.
+- `sell_rank_buffer=30` is now equal to `n_holdings=30`, so there is no extra rank buffer beyond the target list. A follow-up test should compare `sell_rank_buffer=40` or `45` for lower turnover.
+- Live PAPER stop/rebalance paths are not yet extended with ATR stop or index-risk overlay; this change is currently proven in the backtest/reporting path.
+
 ## 2026-05-09 Telegram notification smoke test
 
 ### Completed

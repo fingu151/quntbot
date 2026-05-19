@@ -162,7 +162,7 @@ def test_run_writes_csv_output_file(capsys):
         assert f"wrote_csv={output_path}" in captured.out
         assert output_path.read_text(encoding="utf-8").splitlines() == [
             "top_n,rebalance_frequency,cost_scenario,stops,final_equity,total_return,cagr,max_drawdown,sharpe_ratio,win_rate,average_holding_days,trade_count",
-            "20,weekly,custom,on,11000.00,10.00%,20.00%,-5.00%,1.2500,55.00%,7.00,0",
+            "30,weekly,custom,on,11000.00,10.00%,20.00%,-5.00%,1.2500,55.00%,7.00,0",
         ]
     finally:
         output_path.unlink(missing_ok=True)
@@ -212,10 +212,10 @@ def test_run_writes_markdown_report(capsys):
         assert exit_code == 0
         assert f"wrote_md={output_path}" in captured.out
         assert "# Backtest Matrix Report" in report
-        assert "Best by Sharpe: top_n=20, rebalance=weekly, cost=zero, stops=on" in report
-        assert "Best by Return: top_n=20, rebalance=weekly, cost=zero, stops=on" in report
-        assert "Lowest MDD: top_n=20, rebalance=weekly, cost=base, stops=on" in report
-        assert "Lowest Trades: top_n=20, rebalance=weekly, cost=base, stops=on" in report
-        assert "| 20 | weekly | zero | on | 12000.00 | 20.00% | 1.2000 |" in report
+        assert "Best by Sharpe: top_n=30, rebalance=weekly, cost=zero, stops=on" in report
+        assert "Best by Return: top_n=30, rebalance=weekly, cost=zero, stops=on" in report
+        assert "Lowest MDD: top_n=30, rebalance=weekly, cost=base, stops=on" in report
+        assert "Lowest Trades: top_n=30, rebalance=weekly, cost=base, stops=on" in report
+        assert "| 30 | weekly | zero | on | 12000.00 | 20.00% | 1.2000 |" in report
     finally:
         output_path.unlink(missing_ok=True)

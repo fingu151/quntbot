@@ -6,6 +6,7 @@ from src.backtest import engine as backtest_engine
 from src.backtest.engine import _group_prices_by_date, _is_kosdaq_market, run_backtest
 from src.data.database import create_tables, get_engine, session_scope
 from src.data.repositories import (
+    upsert_market_index_prices,
     upsert_daily_prices,
     upsert_fundamentals,
     upsert_quality_metrics,
@@ -99,6 +100,24 @@ def seed_prices_for_tickers(engine, tickers, *, start: date, days: int, price: i
             for ticker in tickers:
                 rows.append({"ticker": ticker, "date": price_date, "open": price, "close": price})
         upsert_daily_prices(session, rows)
+
+
+def seed_market_index_prices(engine, symbol: str, rows) -> None:
+    with session_scope(engine) as session:
+        upsert_market_index_prices(
+            session,
+            [
+                {
+                    "symbol": symbol,
+                    "date": price_date,
+                    "open": open_,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                }
+                for price_date, open_, high, low, close in rows
+            ],
+        )
 
 
 def test_run_backtest_buys_top_ranked_stock_and_tracks_equity():
@@ -738,6 +757,139 @@ def test_run_backtest_score_weighted_allocation_uses_target_scores():
     ]
 
 
+def test_run_backtest_stop_cooldown_blocks_reentry_for_three_trading_days():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_single_stock_prices(
+        engine,
+        [
+            (date(2026, 1, 1), 100, 100),
+            (date(2026, 1, 2), 100, 92),
+            (date(2026, 1, 3), 92, 92),
+            (date(2026, 1, 4), 100, 100),
+            (date(2026, 1, 5), 100, 100),
+            (date(2026, 1, 6), 100, 100),
+            (date(2026, 1, 7), 100, 100),
+        ],
+    )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 7),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        stop_loss_pct=-0.07,
+        stop_cooldown_days=3,
+        rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
+    )
+
+    buys = [trade for trade in result.trades if trade.side == "BUY"]
+    sells = [trade for trade in result.trades if trade.side == "SELL"]
+    assert sells[0].reason == "stop_loss"
+    assert buys[0].date == date(2026, 1, 2)
+    assert buys[1].date == date(2026, 1, 7)
+
+
+def test_run_backtest_triggers_atr_stop_before_percentage_stop():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_stocks(session, [{"ticker": "AAA", "name": "AAA", "market": "KOSPI"}])
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "AAA", "date": date(2026, 1, 1), "open": 100, "high": 101, "low": 99, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 2), "open": 100, "high": 101, "low": 99, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 3), "open": 100, "high": 101, "low": 99, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 4), "open": 96, "high": 97, "low": 95, "close": 96},
+                {"ticker": "AAA", "date": date(2026, 1, 5), "open": 96, "high": 97, "low": 95, "close": 96},
+            ],
+        )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        stop_loss_pct=-0.07,
+        enable_atr_stop=True,
+        atr_window=3,
+        atr_multiplier=1.0,
+        rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
+    )
+
+    sells = [trade for trade in result.trades if trade.side == "SELL"]
+    assert sells[0].reason == "atr_stop"
+    assert sells[0].date == date(2026, 1, 5)
+
+
+def test_run_backtest_market_risk_overlay_reduces_exposure_to_cash_target():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_single_stock_prices(
+        engine,
+        [
+            (date(2026, 1, 1), 100, 100),
+            (date(2026, 1, 2), 100, 100),
+            (date(2026, 1, 3), 100, 100),
+        ],
+    )
+    seed_market_index_prices(
+        engine,
+        "NASDAQ",
+        [
+            (date(2025, 12, 31), 100, 100, 100, 100),
+            (date(2026, 1, 1), 96, 96, 96, 96),
+            (date(2026, 1, 2), 96, 96, 96, 96),
+        ],
+    )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 3),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+        enable_market_risk_overlay=True,
+        nasdaq_moderate_drop_pct=-0.02,
+        nasdaq_severe_drop_pct=-0.035,
+        nasdaq_moderate_cash_target=0.20,
+        nasdaq_severe_cash_target=0.35,
+        rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
+    )
+
+    first_buy = next(trade for trade in result.trades if trade.side == "BUY")
+    assert first_buy.gross_amount == pytest.approx(6_500)
+    assert result.equity_curve[1].cash == pytest.approx(3_500)
+
+
 def test_stops_with_costs_change_trade_count_and_equity():
     engine = get_engine("sqlite:///:memory:")
     create_tables(engine)
@@ -874,7 +1026,12 @@ def test_load_prices_includes_open_and_close():
         end_date=date(2026, 1, 1),
     )
 
-    assert prices[("AAA", date(2026, 1, 1))] == {"open": 95.0, "close": 100.0}
+    assert prices[("AAA", date(2026, 1, 1))] == {
+        "open": 95.0,
+        "high": 100.0,
+        "low": 100.0,
+        "close": 100.0,
+    }
 
 
 def test_default_fast_scorer_uses_quality_metrics_for_ranking():

@@ -42,6 +42,21 @@ class DailyPrice(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class MarketIndexPrice(Base):
+    __tablename__ = "market_index_prices"
+    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_market_index_prices_symbol_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    open: Mapped[float | None] = mapped_column(Float)
+    high: Mapped[float | None] = mapped_column(Float)
+    low: Mapped[float | None] = mapped_column(Float)
+    close: Mapped[float | None] = mapped_column(Float)
+    volume: Mapped[float | None] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class Fundamental(Base):
     __tablename__ = "fundamentals"
     __table_args__ = (UniqueConstraint("ticker", "date", name="uq_fundamentals_ticker_date"),)

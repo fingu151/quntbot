@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import Engine, select
 
-from config import COST, EXIT_RULES, FACTOR, PORTFOLIO, REBALANCE
+from config import COST, EXIT_RULES, FACTOR, MARKET_RISK, PORTFOLIO, REBALANCE
 from src.backtest.metrics import (
     average_holding_days,
     calculate_cagr,
@@ -20,7 +20,7 @@ from src.backtest.metrics import (
 )
 from src.backtest.models import BacktestResult, BacktestTrade, EquityPoint
 from src.data.database import session_scope
-from src.data.models import DailyPrice, Fundamental, QualityMetric, Stock
+from src.data.models import DailyPrice, Fundamental, MarketIndexPrice, QualityMetric, Stock
 from src.factors.engine import (
     _latest_available_quality_metric,
     _recent_available_operating_margins,
@@ -51,6 +51,9 @@ def run_backtest(
     stop_loss_pct: float = EXIT_RULES.stop_loss_pct,
     trailing_stop_pct: float = EXIT_RULES.trailing_stop_pct,
     stop_cooldown_days: int = EXIT_RULES.stop_cooldown_days,
+    enable_atr_stop: bool = EXIT_RULES.enable_atr_stop,
+    atr_window: int = EXIT_RULES.atr_window,
+    atr_multiplier: float = EXIT_RULES.atr_multiplier,
     rebalance_frequency: str = REBALANCE.frequency,
     profit_take_pct: float = EXIT_RULES.profit_take_pct,
     profit_take_sell_fraction: float = EXIT_RULES.profit_take_sell_fraction,
@@ -60,6 +63,15 @@ def run_backtest(
     weighting: str = PORTFOLIO.weighting,
     min_position_weight: float = PORTFOLIO.min_position_weight,
     max_position_weight: float = PORTFOLIO.max_position_weight,
+    enable_market_risk_overlay: bool = MARKET_RISK.enable_overlay,
+    market_risk_rsi_window: int = MARKET_RISK.rsi_window,
+    market_risk_rsi_threshold: float = MARKET_RISK.rsi_overheat_threshold,
+    one_market_overheat_cash_target: float = MARKET_RISK.one_market_overheat_cash_target,
+    both_markets_overheat_cash_target: float = MARKET_RISK.both_markets_overheat_cash_target,
+    nasdaq_moderate_drop_pct: float = MARKET_RISK.nasdaq_moderate_drop_pct,
+    nasdaq_severe_drop_pct: float = MARKET_RISK.nasdaq_severe_drop_pct,
+    nasdaq_moderate_cash_target: float = MARKET_RISK.nasdaq_moderate_cash_target,
+    nasdaq_severe_cash_target: float = MARKET_RISK.nasdaq_severe_cash_target,
 ) -> BacktestResult:
     # 기본 스코어러는 날짜마다 DB를 재쿼리해서 매우 느림.
     # 벌크 로딩 클로저로 교체하면 동일한 결과를 훨씬 빠르게 얻음.
@@ -75,6 +87,7 @@ def run_backtest(
     target_count = int(top_n or PORTFOLIO.n_holdings)
     prices = _load_prices(engine, start_date=start_date, end_date=end_date)
     prices_by_date = _group_prices_by_date(prices)
+    index_prices = _load_market_index_prices(engine, end_date=end_date)
     markets = _load_markets(engine)
     trading_dates = sorted(prices_by_date)
 
@@ -160,7 +173,21 @@ def run_backtest(
         target_tickers = list(positions)
         target_scores: list[FactorScore] = []
         keep_tickers = set(target_tickers)
+        risk_cash_target = 0.0
         if should_rebalance and previous_trading_date is not None:
+            if enable_market_risk_overlay:
+                risk_cash_target = _market_risk_cash_target(
+                    index_prices,
+                    as_of_date=previous_trading_date,
+                    rsi_window=market_risk_rsi_window,
+                    rsi_threshold=market_risk_rsi_threshold,
+                    one_market_overheat_cash_target=one_market_overheat_cash_target,
+                    both_markets_overheat_cash_target=both_markets_overheat_cash_target,
+                    nasdaq_moderate_drop_pct=nasdaq_moderate_drop_pct,
+                    nasdaq_severe_drop_pct=nasdaq_severe_drop_pct,
+                    nasdaq_moderate_cash_target=nasdaq_moderate_cash_target,
+                    nasdaq_severe_cash_target=nasdaq_severe_cash_target,
+                )
             previous_close_prices = {
                 ticker: price["close"]
                 for ticker, price in prices_by_date[previous_trading_date].items()
@@ -225,7 +252,33 @@ def run_backtest(
                 closed_trade_returns.append(trade_return)
                 closed_holding_days.append(holding_days)
 
+        if risk_cash_target > 0 and positions:
+            cash = _reduce_to_cash_target(
+                positions=positions,
+                entry_dates=entry_dates,
+                entry_values=entry_values,
+                entry_prices=entry_prices,
+                peak_prices=peak_prices,
+                profit_taken=profit_taken,
+                trailing_bucket_qty=trailing_bucket_qty,
+                breakeven_bucket_qty=breakeven_bucket_qty,
+                close_prices=close_prices,
+                open_prices=open_prices,
+                markets=markets,
+                trade_date=trading_date,
+                cash=cash,
+                cash_target=risk_cash_target,
+                commission_rate=commission_rate,
+                tax_rate_kospi=tax_rate_kospi,
+                tax_rate_kosdaq=tax_rate_kosdaq,
+                slippage_rate=slippage_rate,
+                trades=trades,
+                closed_trade_returns=closed_trade_returns,
+                closed_holding_days=closed_holding_days,
+            )
+
         equity_before_buys = cash + _positions_value(positions, close_prices)
+        investable_equity = equity_before_buys * max(0.0, 1.0 - risk_cash_target)
         target_weights: dict[str, float] = {}
         if weighting == "score_weighted" and target_scores:
             target_weights = compute_score_weights(
@@ -233,13 +286,13 @@ def run_backtest(
                 min_weight=min_position_weight,
                 max_weight=max_position_weight,
             )
-        equal_target_value = equity_before_buys / len(target_tickers) if target_tickers else 0.0
+        equal_target_value = investable_equity / len(target_tickers) if target_tickers else 0.0
         for ticker in target_tickers:
             if ticker in positions:
                 continue
             price = open_prices[ticker]
             if target_weights:
-                target_value = equity_before_buys * target_weights.get(ticker, 0.0)
+                target_value = investable_equity * target_weights.get(ticker, 0.0)
             else:
                 target_value = equal_target_value
             quantity = target_value / price if price > 0 else 0.0
@@ -279,7 +332,15 @@ def run_backtest(
                 return_from_entry = (close / entry) - 1.0
                 loss_from_peak = (close / peak_prices[ticker]) - 1.0
                 if ticker not in profit_taken:
-                    if return_from_entry <= stop_loss_pct:
+                    atr = (
+                        _average_true_range(prices, ticker=ticker, as_of_date=trading_date, window=atr_window)
+                        if enable_atr_stop
+                        else None
+                    )
+                    atr_stop_price = entry - (atr * atr_multiplier) if atr is not None else None
+                    if atr_stop_price is not None and close <= atr_stop_price:
+                        pending_exits.append((ticker, "atr_stop", None))
+                    elif return_from_entry <= stop_loss_pct:
                         pending_exits.append((ticker, "stop_loss", None))
                     elif return_from_entry >= profit_take_pct:
                         sell_qty = positions[ticker] * profit_take_sell_fraction
@@ -403,10 +464,38 @@ def _load_prices(engine: Engine, *, start_date: date, end_date: date) -> dict[tu
             select(DailyPrice).where(DailyPrice.date >= start_date, DailyPrice.date <= end_date)
         ).all()
     return {
-        (row.ticker, row.date): {"open": float(row.open), "close": float(row.close)}
+        (row.ticker, row.date): {
+            "open": float(row.open),
+            "high": float(row.high if row.high is not None else row.close),
+            "low": float(row.low if row.low is not None else row.close),
+            "close": float(row.close),
+        }
         for row in rows
         if row.open is not None and row.close is not None
     }
+
+
+def _load_market_index_prices(engine: Engine, *, end_date: date) -> dict[str, list[dict[str, Any]]]:
+    with session_scope(engine) as session:
+        rows = session.scalars(
+            select(MarketIndexPrice)
+            .where(MarketIndexPrice.date <= end_date)
+            .order_by(MarketIndexPrice.symbol, MarketIndexPrice.date)
+        ).all()
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row.close is None:
+            continue
+        grouped[row.symbol.upper()].append(
+            {
+                "date": row.date,
+                "open": float(row.open if row.open is not None else row.close),
+                "high": float(row.high if row.high is not None else row.close),
+                "low": float(row.low if row.low is not None else row.close),
+                "close": float(row.close),
+            }
+        )
+    return grouped
 
 
 def _load_markets(engine: Engine) -> dict[str, str]:
@@ -424,6 +513,90 @@ def _group_prices_by_date(prices: dict[tuple[str, date], Any]) -> dict[date, dic
 
 def _positions_value(positions: dict[str, float], prices: dict[str, float]) -> float:
     return sum(quantity * prices[ticker] for ticker, quantity in positions.items() if ticker in prices)
+
+
+def _reduce_to_cash_target(
+    *,
+    positions: dict[str, float],
+    entry_dates: dict[str, date],
+    entry_values: dict[str, float],
+    entry_prices: dict[str, float],
+    peak_prices: dict[str, float],
+    profit_taken: set[str],
+    trailing_bucket_qty: dict[str, float],
+    breakeven_bucket_qty: dict[str, float],
+    close_prices: dict[str, float],
+    open_prices: dict[str, float],
+    markets: dict[str, str],
+    trade_date: date,
+    cash: float,
+    cash_target: float,
+    commission_rate: float,
+    tax_rate_kospi: float,
+    tax_rate_kosdaq: float,
+    slippage_rate: float,
+    trades: list[BacktestTrade],
+    closed_trade_returns: list[float],
+    closed_holding_days: list[int],
+) -> float:
+    equity = cash + _positions_value(positions, close_prices)
+    target_cash = equity * cash_target
+    cash_needed = target_cash - cash
+    if cash_needed <= 0:
+        return cash
+
+    position_value = _positions_value(positions, open_prices)
+    if position_value <= 0:
+        return cash
+
+    sell_fraction = min(1.0, cash_needed / position_value)
+    for ticker in list(positions):
+        if ticker not in open_prices or ticker not in entry_dates:
+            continue
+        current_quantity = positions[ticker]
+        quantity = current_quantity * sell_fraction
+        if quantity <= 0:
+            continue
+        entry_value = entry_prices.get(ticker, 0.0) * quantity
+        cash, trade, trade_return, holding_days = _sell_position(
+            ticker=ticker,
+            quantity=quantity,
+            price=open_prices[ticker],
+            trade_date=trade_date,
+            cash=cash,
+            market=markets.get(ticker, ""),
+            entry_date=entry_dates[ticker],
+            entry_value=entry_value,
+            commission_rate=commission_rate,
+            tax_rate_kospi=tax_rate_kospi,
+            tax_rate_kosdaq=tax_rate_kosdaq,
+            slippage_rate=slippage_rate,
+            reason="market_risk_reduce",
+        )
+        trades.append(trade)
+        closed_trade_returns.append(trade_return)
+        closed_holding_days.append(holding_days)
+        remaining_quantity = current_quantity - quantity
+        if remaining_quantity <= 1e-9:
+            positions.pop(ticker, None)
+            entry_dates.pop(ticker, None)
+            entry_values.pop(ticker, None)
+            entry_prices.pop(ticker, None)
+            peak_prices.pop(ticker, None)
+            profit_taken.discard(ticker)
+            trailing_bucket_qty.pop(ticker, None)
+            breakeven_bucket_qty.pop(ticker, None)
+        else:
+            positions[ticker] = remaining_quantity
+            entry_values[ticker] = max(
+                0.0,
+                entry_values.get(ticker, 0.0) - entry_value,
+            )
+            if ticker in trailing_bucket_qty:
+                trailing_bucket_qty[ticker] *= 1.0 - sell_fraction
+            if ticker in breakeven_bucket_qty:
+                breakeven_bucket_qty[ticker] *= 1.0 - sell_fraction
+    return cash
 
 
 def _sell_position(
@@ -486,6 +659,92 @@ def _rebalance_key(value: date, frequency: str) -> tuple[int, ...]:
     if frequency == "monthly":
         return (value.year, value.month)
     raise ValueError("rebalance_frequency must be one of: daily, weekly, monthly")
+
+
+def _market_risk_cash_target(
+    index_prices: dict[str, list[dict[str, Any]]],
+    *,
+    as_of_date: date,
+    rsi_window: int,
+    rsi_threshold: float,
+    one_market_overheat_cash_target: float,
+    both_markets_overheat_cash_target: float,
+    nasdaq_moderate_drop_pct: float,
+    nasdaq_severe_drop_pct: float,
+    nasdaq_moderate_cash_target: float,
+    nasdaq_severe_cash_target: float,
+) -> float:
+    cash_target = 0.0
+    overheated = 0
+    for symbol in ("KOSPI", "KOSDAQ"):
+        closes = _index_closes_until(index_prices.get(symbol, []), as_of_date)
+        rsi = _rsi_from_closes(closes, rsi_window)
+        if rsi is not None and rsi >= rsi_threshold:
+            overheated += 1
+    if overheated == 1:
+        cash_target = max(cash_target, one_market_overheat_cash_target)
+    elif overheated >= 2:
+        cash_target = max(cash_target, both_markets_overheat_cash_target)
+
+    nasdaq_closes = _index_closes_until(index_prices.get("NASDAQ", []), as_of_date)
+    if len(nasdaq_closes) >= 2 and nasdaq_closes[-2] > 0:
+        nasdaq_return = (nasdaq_closes[-1] / nasdaq_closes[-2]) - 1.0
+        if nasdaq_return <= nasdaq_severe_drop_pct:
+            cash_target = max(cash_target, nasdaq_severe_cash_target)
+        elif nasdaq_return <= nasdaq_moderate_drop_pct:
+            cash_target = max(cash_target, nasdaq_moderate_cash_target)
+    return min(max(cash_target, 0.0), 1.0)
+
+
+def _index_closes_until(rows: list[dict[str, Any]], as_of_date: date) -> list[float]:
+    return [float(row["close"]) for row in rows if row["date"] <= as_of_date and row["close"] > 0]
+
+
+def _rsi_from_closes(closes: list[float], window: int) -> float | None:
+    if len(closes) <= window:
+        return None
+    changes = [
+        current - previous
+        for previous, current in zip(closes[-window - 1 :], closes[-window:])
+    ]
+    gains = [max(change, 0.0) for change in changes]
+    losses = [abs(min(change, 0.0)) for change in changes]
+    average_gain = sum(gains) / window
+    average_loss = sum(losses) / window
+    if average_loss == 0:
+        return 100.0 if average_gain > 0 else 50.0
+    relative_strength = average_gain / average_loss
+    return 100.0 - (100.0 / (1.0 + relative_strength))
+
+
+def _average_true_range(
+    prices: dict[tuple[str, date], dict[str, float]],
+    *,
+    ticker: str,
+    as_of_date: date,
+    window: int,
+) -> float | None:
+    rows = [
+        (price_date, price)
+        for (price_ticker, price_date), price in prices.items()
+        if price_ticker == ticker and price_date <= as_of_date
+    ]
+    rows.sort(key=lambda item: item[0])
+    if len(rows) <= window:
+        return None
+    true_ranges: list[float] = []
+    for (_, previous), (_, current) in zip(rows[-window - 1 :], rows[-window:]):
+        previous_close = previous["close"]
+        true_ranges.append(
+            max(
+                current["high"] - current["low"],
+                abs(current["high"] - previous_close),
+                abs(current["low"] - previous_close),
+            )
+        )
+    if len(true_ranges) < window:
+        return None
+    return sum(true_ranges) / window
 
 
 def _make_fast_score_func(

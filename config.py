@@ -213,7 +213,7 @@ class PortfolioConfig:
     initial_capital: float = 100_000_000  # 1억원 (모의투자)
 
     # 보유 종목 수
-    n_holdings: int = 20
+    n_holdings: int = 30
 
     # 종목별 비중 ("equal" = 균등 / "score_weighted" = 점수 비례)
     weighting: Literal["equal", "score_weighted"] = "score_weighted"
@@ -242,16 +242,35 @@ class ExitRulesConfig:
     # 트레일링 스톱: 보유 후 최고가 대비 -X% 하락 시 매도
     trailing_stop_pct: float = -0.10  # -10%
     # Calendar days to block rebuying a ticker after a stop exit. 0 preserves prior behavior.
-    stop_cooldown_days: int = 0
+    stop_cooldown_days: int = 3
     profit_take_pct: float = 0.20
     profit_take_sell_fraction: float = 0.50
     breakeven_stop_pct: float = 0.0
+    enable_atr_stop: bool = True
+    atr_window: int = 14
+    atr_multiplier: float = 2.5
 
     # 리밸런싱: 점수 하위로 밀려나면 교체 (Phase 2 점수 엔진과 연동)
     use_rebalance_exit: bool = True
 
 
 EXIT_RULES = ExitRulesConfig()
+
+
+@dataclass(frozen=True)
+class MarketRiskConfig:
+    enable_overlay: bool = True
+    rsi_window: int = 14
+    rsi_overheat_threshold: float = 75.0
+    one_market_overheat_cash_target: float = 0.15
+    both_markets_overheat_cash_target: float = 0.25
+    nasdaq_moderate_drop_pct: float = -0.02
+    nasdaq_severe_drop_pct: float = -0.035
+    nasdaq_moderate_cash_target: float = 0.20
+    nasdaq_severe_cash_target: float = 0.35
+
+
+MARKET_RISK = MarketRiskConfig()
 
 # =============================================================================
 # 리밸런싱 스케줄
@@ -381,6 +400,23 @@ def validate() -> list[str]:
         warnings.append("EXIT_RULES.profit_take_pct must be positive.")
     if not 0 < EXIT_RULES.profit_take_sell_fraction < 1:
         warnings.append("EXIT_RULES.profit_take_sell_fraction must be between 0 and 1.")
+    if EXIT_RULES.atr_window <= 0:
+        warnings.append("EXIT_RULES.atr_window must be greater than 0.")
+    if EXIT_RULES.atr_multiplier <= 0:
+        warnings.append("EXIT_RULES.atr_multiplier must be greater than 0.")
+    for name in (
+        "one_market_overheat_cash_target",
+        "both_markets_overheat_cash_target",
+        "nasdaq_moderate_cash_target",
+        "nasdaq_severe_cash_target",
+    ):
+        value = getattr(MARKET_RISK, name)
+        if not 0 <= value <= 1:
+            warnings.append(f"MARKET_RISK.{name} must be between 0 and 1.")
+    if MARKET_RISK.rsi_window <= 0:
+        warnings.append("MARKET_RISK.rsi_window must be greater than 0.")
+    if MARKET_RISK.nasdaq_severe_drop_pct > MARKET_RISK.nasdaq_moderate_drop_pct:
+        warnings.append("MARKET_RISK.nasdaq_severe_drop_pct must be <= nasdaq_moderate_drop_pct.")
     if REBALANCE.sell_rank_buffer < PORTFOLIO.n_holdings:
         warnings.append("REBALANCE.sell_rank_buffer must be >= PORTFOLIO.n_holdings.")
     if REBALANCE.min_holding_trading_days < 0:
@@ -400,6 +436,7 @@ if __name__ == "__main__":
         "FACTOR": FACTOR.__dict__,
         "PORTFOLIO": {**PORTFOLIO.__dict__, "per_position_cash": PORTFOLIO.per_position_cash},
         "EXIT_RULES": EXIT_RULES.__dict__,
+        "MARKET_RISK": MARKET_RISK.__dict__,
         "REBALANCE": REBALANCE.__dict__,
         "SAFETY": SAFETY.__dict__,
         "COST": COST.__dict__,

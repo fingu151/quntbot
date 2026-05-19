@@ -3,7 +3,15 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 
 from src.data.database import create_tables, get_engine, session_scope
-from src.data.models import DailyPrice, Fundamental, ResearchReportAnalysis, ResearchReportBrief, ResearchReportSignal, Stock
+from src.data.models import (
+    DailyPrice,
+    Fundamental,
+    MarketIndexPrice,
+    ResearchReportAnalysis,
+    ResearchReportBrief,
+    ResearchReportSignal,
+    Stock,
+)
 from src.data.repositories import (
     count_rows,
     get_latest_busanstock_signals,
@@ -16,6 +24,7 @@ from src.data.repositories import (
     upsert_daily_prices,
     upsert_fundamentals,
     upsert_investor_flows,
+    upsert_market_index_prices,
     upsert_research_report_analyses,
     upsert_research_report_briefs,
     upsert_research_report_signals,
@@ -73,6 +82,29 @@ def test_upsert_daily_prices_uses_ticker_and_date_as_unique_key():
 
     assert len(rows) == 1
     assert rows[0].close == 70600
+
+
+def test_upsert_market_index_prices_uses_symbol_and_date_as_unique_key():
+    engine = make_session()
+    row = {
+        "symbol": "KOSPI",
+        "date": date(2026, 5, 1),
+        "open": 2700,
+        "high": 2720,
+        "low": 2690,
+        "close": 2710,
+        "volume": 1000,
+    }
+
+    with session_scope(engine) as session:
+        upsert_market_index_prices(session, [row])
+        upsert_market_index_prices(session, [{**row, "close": 2715}])
+
+    with session_scope(engine) as session:
+        rows = session.scalars(select(MarketIndexPrice)).all()
+
+    assert len(rows) == 1
+    assert rows[0].close == 2715
 
 
 def test_upsert_daily_prices_batches_large_inputs_under_sqlite_variable_limit():
