@@ -3683,6 +3683,13 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 - Initial Adaptive Alpha default: total return `89.86%`, max drawdown `-13.44%`, Sharpe `1.7533`.
 - Tuned Adaptive Alpha default improved versus initial Adaptive Alpha by `+4.85pp` total return, `+1.15pp` max drawdown, and `+0.0876` Sharpe.
 - Tuned Adaptive Alpha improved return and Sharpe versus both prior references while also improving drawdown versus the prior no-overlay/no-ATR baseline and the initial Adaptive Alpha run.
+- Adopted exit/rebalance defaults after user approval:
+  - `EXIT_RULES.trailing_stop_pct=-0.08`;
+  - `EXIT_RULES.profit_take_pct=0.16`;
+  - `EXIT_RULES.profit_take_sell_fraction=0.45`;
+  - `EXIT_RULES.atr_multiplier=2.2`;
+  - `REBALANCE.sell_rank_buffer=40`.
+- This adoption changes shared defaults used by the normal backtest scripts and PAPER exit monitor configuration, but it does not add a new order execution path or bypass dry-run/readiness gates.
 
 ## 2026-05-09 Telegram notification smoke test
 

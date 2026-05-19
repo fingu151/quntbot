@@ -229,7 +229,7 @@ def test_check_stop_loss_does_not_trigger_above_threshold():
     engine._client.place_order.assert_not_called()
 
 
-def test_check_exit_rules_takes_half_profit_once(tmp_path):
+def test_check_exit_rules_takes_adopted_profit_fraction_once(tmp_path):
     engine = _make_engine(stop_loss_pct=-0.05)
     engine._exit_state_store = ExitStateStore(tmp_path / "exit_state.json")
     engine._client.get_holdings.return_value = [
@@ -248,7 +248,7 @@ def test_check_exit_rules_takes_half_profit_once(tmp_path):
     assert first == ["005930"]
     assert second == []
     engine._client.place_order.assert_called_once_with(
-        "005930", qty=5, price=0, side="SELL"
+        "005930", qty=4, price=0, side="SELL"
     )
 
 
@@ -411,11 +411,11 @@ def test_check_exit_rules_same_price_rebuy_after_completed_exit_is_fresh(tmp_pat
 
     assert triggered == ["005930"]
     engine._client.place_order.assert_called_once_with(
-        "005930", qty=5, price=0, side="SELL"
+        "005930", qty=4, price=0, side="SELL"
     )
     state = engine._exit_state_store.load()["005930"]
     assert state.profit_take_done is True
-    assert state.trailing_qty == 2
+    assert state.trailing_qty == 3
     assert state.breakeven_qty == 3
     assert state.peak_price == 121_000
 

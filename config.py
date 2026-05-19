@@ -240,15 +240,15 @@ class ExitRulesConfig:
     stop_loss_pct: float = -0.07   # -7%
 
     # 트레일링 스톱: 보유 후 최고가 대비 -X% 하락 시 매도
-    trailing_stop_pct: float = -0.10  # -10%
+    trailing_stop_pct: float = -0.08  # -8%
     # Calendar days to block rebuying a ticker after a stop exit. 0 preserves prior behavior.
     stop_cooldown_days: int = 3
-    profit_take_pct: float = 0.20
-    profit_take_sell_fraction: float = 0.50
+    profit_take_pct: float = 0.16
+    profit_take_sell_fraction: float = 0.45
     breakeven_stop_pct: float = 0.0
     enable_atr_stop: bool = True
     atr_window: int = 14
-    atr_multiplier: float = 2.5
+    atr_multiplier: float = 2.2
 
     # 리밸런싱: 점수 하위로 밀려나면 교체 (Phase 2 점수 엔진과 연동)
     use_rebalance_exit: bool = True
@@ -279,7 +279,7 @@ MARKET_RISK = MarketRiskConfig()
 class RebalanceConfig:
     # 정기 리밸런싱 주기
     frequency: Literal["daily", "weekly", "monthly"] = "weekly"
-    sell_rank_buffer: int = 30
+    sell_rank_buffer: int = 40
     min_holding_trading_days: int = 2
 
     # 장 시작 전 점수 재계산 시각 (HH:MM, KST)
