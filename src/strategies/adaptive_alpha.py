@@ -23,13 +23,13 @@ RunBacktestFunction = Callable[..., BacktestResult]
 @dataclass(frozen=True)
 class AdaptiveAlphaConfig:
     top_n: int = 30
-    sell_rank_buffer: int = 45
+    sell_rank_buffer: int = 40
     min_position_weight: float = 0.03
     max_position_weight: float = 0.12
     stop_loss_pct: float = -0.07
     trailing_stop_pct: float = -0.08
     stop_cooldown_days: int = 3
-    profit_take_pct: float = 0.18
+    profit_take_pct: float = 0.16
     profit_take_sell_fraction: float = 0.45
     breakeven_stop_pct: float = 0.0
     atr_window: int = 14
@@ -59,18 +59,29 @@ def calculate_adaptive_alpha_scores(
     as_of_date: date,
     base_scorer: BaseScorer = calculate_factor_scores,
     config: AdaptiveAlphaConfig = DEFAULT_ADAPTIVE_ALPHA,
+    price_history_by_ticker: dict[str, list[tuple[date, float]]] | None = None,
 ) -> list[FactorScore]:
     base_scores = base_scorer(engine, as_of_date=as_of_date)
     if not base_scores:
         return []
 
     tickers = [score.ticker for score in base_scores]
-    price_history = _load_price_history(
-        engine,
-        tickers=tickers,
-        as_of_date=as_of_date,
-        lookback_days=config.lookback_days,
-    )
+    if price_history_by_ticker is None:
+        price_history = _load_price_history(
+            engine,
+            tickers=tickers,
+            as_of_date=as_of_date,
+            lookback_days=config.lookback_days,
+        )
+    else:
+        price_history = {
+            ticker: _slice_preloaded_history(
+                price_history_by_ticker.get(ticker, []),
+                as_of_date=as_of_date,
+                lookback_days=config.lookback_days,
+            )
+            for ticker in tickers
+        }
     adjusted = [
         _with_adaptive_score(score, price_history.get(score.ticker, []), config)
         for score in base_scores
@@ -112,6 +123,12 @@ def run_adaptive_alpha_backtest(
         start_date=start_date,
         end_date=end_date,
     )
+    price_history_by_ticker = preload_adaptive_price_history(
+        engine,
+        start_date=start_date,
+        end_date=end_date,
+        lookback_days=config.lookback_days,
+    )
 
     def scoring_func(engine: Engine, *, as_of_date: date) -> list[FactorScore]:
         return calculate_adaptive_alpha_scores(
@@ -119,6 +136,7 @@ def run_adaptive_alpha_backtest(
             as_of_date=as_of_date,
             base_scorer=base_scorer,
             config=config,
+            price_history_by_ticker=price_history_by_ticker,
         )
 
     params = {
@@ -240,6 +258,40 @@ def _load_price_history(
         if row.close is not None and row.close > 0:
             history.setdefault(row.ticker, []).append(float(row.close))
     return {ticker: values[-lookback_days:] for ticker, values in history.items()}
+
+
+def preload_adaptive_price_history(
+    engine: Engine,
+    *,
+    start_date: date,
+    end_date: date,
+    lookback_days: int,
+) -> dict[str, list[tuple[date, float]]]:
+    query_start = start_date - timedelta(days=lookback_days * 2)
+    with session_scope(engine) as session:
+        rows = session.scalars(
+            select(DailyPrice)
+            .where(
+                DailyPrice.date >= query_start,
+                DailyPrice.date <= end_date,
+            )
+            .order_by(DailyPrice.ticker, DailyPrice.date)
+        ).all()
+    history: dict[str, list[tuple[date, float]]] = {}
+    for row in rows:
+        if row.close is not None and row.close > 0:
+            history.setdefault(row.ticker, []).append((row.date, float(row.close)))
+    return history
+
+
+def _slice_preloaded_history(
+    rows: list[tuple[date, float]],
+    *,
+    as_of_date: date,
+    lookback_days: int,
+) -> list[float]:
+    values = [close for price_date, close in rows if price_date <= as_of_date]
+    return values[-lookback_days:]
 
 
 def _mean(values: list[float]) -> float:

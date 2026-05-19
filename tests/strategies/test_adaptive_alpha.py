@@ -7,6 +7,7 @@ from src.factors.models import FactorScore
 from src.strategies.adaptive_alpha import (
     AdaptiveAlphaConfig,
     calculate_adaptive_alpha_scores,
+    preload_adaptive_price_history,
     run_adaptive_alpha_backtest,
 )
 
@@ -71,6 +72,32 @@ def test_adaptive_alpha_reorders_base_scores_by_trend_quality():
     assert scores[0].total_score > scores[1].total_score
 
 
+def test_adaptive_alpha_can_use_preloaded_price_history():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    _seed_prices(engine, "STRONG", [100 + index for index in range(80)])
+    _seed_prices(engine, "WEAK", [180 - index for index in range(80)])
+    preloaded = preload_adaptive_price_history(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 3, 21),
+        lookback_days=90,
+    )
+
+    def base_scorer(engine, *, as_of_date):
+        return [_score("WEAK", 80), _score("STRONG", 78)]
+
+    scores = calculate_adaptive_alpha_scores(
+        engine,
+        as_of_date=date(2026, 3, 21),
+        base_scorer=base_scorer,
+        config=AdaptiveAlphaConfig(technical_weight=0.45),
+        price_history_by_ticker=preloaded,
+    )
+
+    assert [score.ticker for score in scores] == ["STRONG", "WEAK"]
+
+
 def test_run_adaptive_alpha_backtest_passes_isolated_strategy_defaults():
     engine = get_engine("sqlite:///:memory:")
     create_tables(engine)
@@ -105,7 +132,7 @@ def test_run_adaptive_alpha_backtest_passes_isolated_strategy_defaults():
     assert captured["stop_cooldown_days"] == 3
     assert captured["enable_atr_stop"] is True
     assert captured["atr_multiplier"] == 2.2
-    assert captured["profit_take_pct"] == 0.18
-    assert captured["sell_rank_buffer"] == 45
+    assert captured["profit_take_pct"] == 0.16
+    assert captured["sell_rank_buffer"] == 40
     assert captured["enable_market_risk_overlay"] is True
     assert callable(captured["scoring_func"])

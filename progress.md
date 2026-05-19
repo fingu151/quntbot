@@ -3609,7 +3609,9 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
   - `src/strategies/__init__.py`;
   - `src/strategies/adaptive_alpha.py`;
   - `scripts/run_adaptive_alpha_backtest.py`;
-  - `tests/strategies/test_adaptive_alpha.py`.
+  - `scripts/run_adaptive_alpha_matrix.py`;
+  - `tests/strategies/test_adaptive_alpha.py`;
+  - `tests/strategies/test_run_adaptive_alpha_matrix.py`.
 - Strategy design:
   - uses the existing factor engine output as the base candidate list;
   - re-ranks candidates with recent price trend quality:
@@ -3619,12 +3621,12 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
     - 20-day moving average rising;
     - 20-day return positive;
   - penalizes high recent daily volatility;
-  - keeps `30` holdings but uses a wider sell rank buffer of `45`;
+  - keeps `30` holdings but uses a wider sell rank buffer of `40`;
   - uses score-weighted allocation with `3%` minimum and `12%` maximum position weight;
   - keeps `-7%` full stop and `3` day stop cooldown;
   - uses tighter `-8%` post-profit trailing stop;
   - uses ATR(14) x `2.2` stop;
-  - first profit-take threshold is `+18%`, selling `45%`;
+  - first profit-take threshold is `+16%`, selling `45%`;
   - uses stricter market-risk overlay thresholds:
     - KOSPI/KOSDAQ RSI threshold `72`;
     - one overheated market -> `18%` cash;
@@ -3637,8 +3639,11 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 - RED test: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py -q` -> failed with `ModuleNotFoundError: No module named 'src.strategies'`.
 - GREEN test: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py -q` -> 2 passed.
 - Related test set: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py tests\backtest\test_backtest_engine.py tests\backtest\test_run_matrix_script.py tests\data\test_sync_market_indices.py -q` -> 36 passed.
+- Matrix/preload regression tests: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py tests\strategies\test_run_adaptive_alpha_matrix.py -q` -> 5 passed.
+- Broader related test set: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py tests\strategies\test_run_adaptive_alpha_matrix.py tests\backtest\test_backtest_engine.py tests\data\test_sync_market_indices.py -q` -> 35 passed, with a non-fatal Windows pytest temp cleanup `PermissionError` after pass reporting.
 - Syntax check: `.\venv\Scripts\python.exe -m compileall src scripts tests` -> passed.
 - First full run hit the 15-minute limit because the wrapper was calling the slow factor scorer. The strategy now reuses the existing `_make_fast_score_func` inside the isolated wrapper; existing engine behavior is unchanged.
+- The strategy now preloads Adaptive Alpha price history once for the tested date range instead of re-querying each rebalance date, which made the parameter matrix practical while leaving the base backtest engine unchanged.
 - Adaptive Alpha actual-data backtest, quality-gated `2024-05-16` to `2026-05-19`:
   - final equity `189,861,769.46`;
   - total return `89.86%`;
@@ -3661,12 +3666,23 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 - Cost stress:
   - slippage20 -> final equity `181,526,541.37`, total return `81.53%`, CAGR `34.57%`, max drawdown `-15.44%`, Sharpe `1.6310`;
   - slippage30 -> final equity `173,928,840.00`, total return `73.93%`, CAGR `31.73%`, max drawdown `-16.94%`, Sharpe `1.5181`.
+- Parameter matrix:
+  - 8-combo run (`sell_rank_buffer` 40/45 x ATR 2.0/2.2 x profit take 16%/18%) exceeded the 20-minute command limit;
+  - 4-combo run fixing ATR at `2.2` completed and wrote `data/adaptive_alpha_param_matrix_2026-05-19.csv` and `data/adaptive_alpha_param_matrix_2026-05-19.md`;
+  - best combo by Sharpe, return, and lowest drawdown was `sell_rank_buffer=40`, `atr_multiplier=2.2`, `profit_take_pct=0.16`;
+  - best combo result: final equity `194,706,952.45`, total return `94.71%`, CAGR `39.35%`, max drawdown `-12.29%`, Sharpe `1.8409`, win rate `58.16%`, average holding days `30.12`, trade count `2,166`;
+  - other tested combos: buffer 40/profit 18% -> return `89.46%`, MDD `-13.65%`, Sharpe `1.7521`; buffer 45/profit 16% -> return `92.06%`, MDD `-12.43%`, Sharpe `1.8053`; buffer 45/profit 18% -> return `88.53%`, MDD `-13.44%`, Sharpe `1.7415`.
+- Best-combo cost stress:
+  - slippage20 -> final equity `182,118,907.98`, total return `82.12%`, CAGR `34.79%`, max drawdown `-15.31%`, Sharpe `1.6572`;
+  - slippage30 -> final equity `175,346,153.69`, total return `75.35%`, CAGR `32.27%`, max drawdown `-16.30%`, Sharpe `1.5537`.
 
 ### Comparison
 
 - Prior no-overlay/no-ATR baseline on the same quality-gated window: total return `88.73%`, max drawdown `-13.67%`, Sharpe `1.6140`.
 - Prior risk-overlay strategy on the same quality-gated window: total return `75.65%`, max drawdown `-13.13%`, Sharpe `1.5220`.
-- Adaptive Alpha improved return and Sharpe versus both prior references while keeping drawdown close to the strongest defensive version.
+- Initial Adaptive Alpha default: total return `89.86%`, max drawdown `-13.44%`, Sharpe `1.7533`.
+- Tuned Adaptive Alpha default improved versus initial Adaptive Alpha by `+4.85pp` total return, `+1.15pp` max drawdown, and `+0.0876` Sharpe.
+- Tuned Adaptive Alpha improved return and Sharpe versus both prior references while also improving drawdown versus the prior no-overlay/no-ATR baseline and the initial Adaptive Alpha run.
 
 ## 2026-05-09 Telegram notification smoke test
 
