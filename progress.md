@@ -3600,6 +3600,74 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 - `sell_rank_buffer=30` is now equal to `n_holdings=30`, so there is no extra rank buffer beyond the target list. A follow-up test should compare `sell_rank_buffer=40` or `45` for lower turnover.
 - Live PAPER stop/rebalance paths are not yet extended with ATR stop or index-risk overlay; this change is currently proven in the backtest/reporting path.
 
+## 2026-05-19 Adaptive Alpha Experimental Strategy
+
+### Completed
+
+- Added an isolated experimental strategy without changing existing backtest, trading, scheduler, or config behavior.
+- New files:
+  - `src/strategies/__init__.py`;
+  - `src/strategies/adaptive_alpha.py`;
+  - `scripts/run_adaptive_alpha_backtest.py`;
+  - `tests/strategies/test_adaptive_alpha.py`.
+- Strategy design:
+  - uses the existing factor engine output as the base candidate list;
+  - re-ranks candidates with recent price trend quality:
+    - latest close above 20-day moving average;
+    - latest close above 60-day moving average;
+    - 20-day moving average above 60-day moving average;
+    - 20-day moving average rising;
+    - 20-day return positive;
+  - penalizes high recent daily volatility;
+  - keeps `30` holdings but uses a wider sell rank buffer of `45`;
+  - uses score-weighted allocation with `3%` minimum and `12%` maximum position weight;
+  - keeps `-7%` full stop and `3` day stop cooldown;
+  - uses tighter `-8%` post-profit trailing stop;
+  - uses ATR(14) x `2.2` stop;
+  - first profit-take threshold is `+18%`, selling `45%`;
+  - uses stricter market-risk overlay thresholds:
+    - KOSPI/KOSDAQ RSI threshold `72`;
+    - one overheated market -> `18%` cash;
+    - both overheated markets -> `30%` cash;
+    - prior Nasdaq drop <= `-1.8%` -> `22%` cash;
+    - prior Nasdaq drop <= `-3.2%` -> `38%` cash.
+
+### Verification
+
+- RED test: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py -q` -> failed with `ModuleNotFoundError: No module named 'src.strategies'`.
+- GREEN test: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py -q` -> 2 passed.
+- Related test set: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py tests\backtest\test_backtest_engine.py tests\backtest\test_run_matrix_script.py tests\data\test_sync_market_indices.py -q` -> 36 passed.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall src scripts tests` -> passed.
+- First full run hit the 15-minute limit because the wrapper was calling the slow factor scorer. The strategy now reuses the existing `_make_fast_score_func` inside the isolated wrapper; existing engine behavior is unchanged.
+- Adaptive Alpha actual-data backtest, quality-gated `2024-05-16` to `2026-05-19`:
+  - final equity `189,861,769.46`;
+  - total return `89.86%`;
+  - CAGR `37.61%`;
+  - max drawdown `-13.44%`;
+  - Sharpe `1.7533`;
+  - win rate `59.33%`;
+  - average holding days `33.93`;
+  - trade count `2,152`.
+- Adaptive Alpha sell reasons:
+  - `atr_stop`: `82`;
+  - `market_risk_reduce`: `190`;
+  - `post_profit_breakeven_stop`: `24`;
+  - `post_profit_trailing_stop`: `158`;
+  - `post_profit_trailing_stop_close_fallback`: `4`;
+  - `profit_take_20`: `204`;
+  - `rebalance`: `464`;
+  - `stop_loss`: `210`;
+  - `stop_loss_close_fallback`: `4`.
+- Cost stress:
+  - slippage20 -> final equity `181,526,541.37`, total return `81.53%`, CAGR `34.57%`, max drawdown `-15.44%`, Sharpe `1.6310`;
+  - slippage30 -> final equity `173,928,840.00`, total return `73.93%`, CAGR `31.73%`, max drawdown `-16.94%`, Sharpe `1.5181`.
+
+### Comparison
+
+- Prior no-overlay/no-ATR baseline on the same quality-gated window: total return `88.73%`, max drawdown `-13.67%`, Sharpe `1.6140`.
+- Prior risk-overlay strategy on the same quality-gated window: total return `75.65%`, max drawdown `-13.13%`, Sharpe `1.5220`.
+- Adaptive Alpha improved return and Sharpe versus both prior references while keeping drawdown close to the strongest defensive version.
+
 ## 2026-05-09 Telegram notification smoke test
 
 ### Completed
