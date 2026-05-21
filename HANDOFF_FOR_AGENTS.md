@@ -414,7 +414,8 @@ TELEGRAM_SIGNAL_CHANNEL=...
   - `data\rebalance_execution_2026-05-12.json`
   - `execution_match_status=matched`
 - 현재 안전 운영 기준:
-  - 실행 전 `--top-n 10` 사용 권장. `SAFETY.max_daily_buys`가 10이라 `--top-n 20`은 사전 차단될 수 있다.
+  - `scripts/daily_paper_run.py` 기본 `--top-n`은 `PORTFOLIO.n_holdings` (`30`)를 따른다.
+  - `SAFETY.max_daily_buys`는 `10`으로 유지한다. 목표 리스트는 30종목으로 만들되, 신규 매수는 하루 최대 10건씩 단계적으로 채운다.
   - KIS 현재가 조회의 일시적 `500`은 `price_retry,...,success`이면 복구된 조회 실패 기록이다. `price_retry_failed_count`, `price_lookup_failed_count`, `price_fallback_count`가 0인지 확인한다.
 
 ### 2026-05-12: Agent operations dashboard

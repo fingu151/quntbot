@@ -9,7 +9,7 @@ def test_parse_args_requires_confirm_token():
 
     assert args.confirm == "EXECUTE_PAPER_REBALANCE"
     assert args.as_of_date == date.today()
-    assert args.top_n == 10
+    assert args.top_n == 30
     assert args.workers == 1
 
 

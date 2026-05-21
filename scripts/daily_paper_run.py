@@ -11,7 +11,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from config import REBALANCE, TRADE_MODE
+from config import PORTFOLIO, REBALANCE, TRADE_MODE
 import scripts.check_rebalance_readiness as readiness
 import scripts.execute_rebalance_from_dry_run as execute
 import scripts.prepare_and_review_rebalance as prepare_review
@@ -39,7 +39,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--as-of-date", type=_parse_date, default=date.today())
     parser.add_argument("--start-date", type=_parse_date, default=None)
-    parser.add_argument("--top-n", type=int, default=10)
+    parser.add_argument("--top-n", type=int, default=PORTFOLIO.n_holdings)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--dry-run-json", type=Path, default=REBALANCE.dry_run_preflight_report_path)

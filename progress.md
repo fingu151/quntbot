@@ -629,7 +629,8 @@
 
 ### Notes
 
-- Use `--top-n 10` for execution-prep runs unless `SAFETY.max_daily_buys` is intentionally changed and reverified.
+- `scripts/daily_paper_run.py` now defaults `--top-n` to `PORTFOLIO.n_holdings` (`30`) so the daily PAPER target list matches the adopted portfolio size.
+- `SAFETY.max_daily_buys` remains `10`; this keeps daily execution throttled while allowing the 30-name target list to be filled over multiple sessions.
 - KIS quote retry rows with `status=success` are recovered current-price lookup failures, not failed orders.
 
 ## 2026-05-09 Rebalance dry-run report automation
