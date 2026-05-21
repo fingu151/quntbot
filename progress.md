@@ -633,6 +633,31 @@
 - `SAFETY.max_daily_buys` remains `10`; this keeps daily execution throttled while allowing the 30-name target list to be filled over multiple sessions.
 - KIS quote retry rows with `status=success` are recovered current-price lookup failures, not failed orders.
 
+## 2026-05-21 US Market Risk Buy Adjustment
+
+### Completed
+
+- Added a shared US-market buy adjustment layer for PAPER rebalance planning.
+- US index data support now covers `NASDAQ`, `SP500`, and `DOW` via the market-index sync path.
+- The adjustment is based on the latest completed US index session before the Korean rebalance date:
+  - severe drop in any tracked US index (`<= -3.0%`) -> `0.60x` buy budget and `40%` cash target note;
+  - moderate drop in two or more indexes (`<= -1.5%`) -> `0.70x`;
+  - moderate drop in one index -> `0.80x`;
+  - rally in two or more indexes (`>= +1.5%`) -> `1.20x`;
+  - broad positive session in two or more indexes (`>= +1.0%`) -> `1.10x`;
+  - missing US index history -> neutral `1.00x`, reported as `missing`.
+- `scripts/dry_run_rebalance.py` writes `us_market_risk` evidence to JSON and Markdown, and scales target weights before buy sizing.
+- `src.trading.scheduler._rebalance_job` uses the same shared adjustment before PAPER buy order planning.
+- Total planned buy value is bounded by the available buy budget, so risk-on scaling cannot plan more cash usage than the available budget allows.
+- Existing PAPER confirmation, dry-run preflight, quote checks, and `SAFETY.max_daily_buys=10` remain unchanged.
+
+### Verification
+
+- TDD RED: targeted US-market adjustment tests initially failed with `ModuleNotFoundError: No module named 'src.trading.us_market_risk'`.
+- Targeted GREEN: `.\venv\Scripts\python.exe -m pytest tests\trading\test_us_market_risk.py tests\trading\test_rebalancer.py::test_buy_budget_multiplier_scales_orders_without_exceeding_budget tests\trading\test_dry_run_rebalance.py::test_run_scales_buy_weights_after_positive_us_market_session tests\trading\test_scheduler.py::test_rebalance_job_applies_us_market_buy_budget_multiplier tests\data\test_sync_market_indices.py::test_run_upserts_fake_market_index_rows -q` -> 7 passed.
+- Related trading/data suite: `.\venv\Scripts\python.exe -m pytest tests\trading\test_us_market_risk.py tests\trading\test_rebalancer.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py tests\data\test_sync_market_indices.py -q` -> 57 passed.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall src\trading scripts\dry_run_rebalance.py scripts\sync_market_indices.py tests\trading tests\data\test_sync_market_indices.py` -> passed.
+
 ## 2026-05-09 Rebalance dry-run report automation
 
 ### Completed

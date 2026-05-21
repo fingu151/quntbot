@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from src.data.database import create_tables, get_engine, session_scope
-from src.data.repositories import upsert_daily_prices
+from src.data.repositories import upsert_daily_prices, upsert_market_index_prices
 from src.factors.models import FactorScore
 
 
@@ -561,3 +561,47 @@ def test_run_writes_machine_readable_json_report(tmp_path):
     assert payload["orders"][1]["side"] == "BUY"
     assert payload["targets"][0]["target_weight"] == 0.15
     client.place_order.assert_not_called()
+
+
+def test_run_scales_buy_weights_after_positive_us_market_session(tmp_path):
+    import scripts.dry_run_rebalance as dry_run
+
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_market_index_prices(
+            session,
+            [
+                {"symbol": "NASDAQ", "date": date(2026, 5, 6), "close": 100.0},
+                {"symbol": "NASDAQ", "date": date(2026, 5, 7), "close": 102.0},
+                {"symbol": "SP500", "date": date(2026, 5, 6), "close": 100.0},
+                {"symbol": "SP500", "date": date(2026, 5, 7), "close": 101.6},
+                {"symbol": "DOW", "date": date(2026, 5, 6), "close": 100.0},
+                {"symbol": "DOW", "date": date(2026, 5, 7), "close": 101.4},
+            ],
+        )
+    client = _client()
+    client.get_balance.return_value["output1"] = []
+    report_path = tmp_path / "dry_run.json"
+    args = dry_run.parse_args([
+        "--as-of-date",
+        "2026-05-08",
+        "--top-n",
+        "1",
+        "--output-json",
+        str(report_path),
+    ])
+
+    result = dry_run.run(
+        args,
+        db_engine=engine,
+        client_factory=MagicMock(return_value=client),
+        score_func=MagicMock(return_value=[_score("NEW", 1)]),
+    )
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert result == 0
+    assert payload["us_market_risk"]["status"] == "risk_on"
+    assert payload["us_market_risk"]["buy_budget_multiplier"] == 1.2
+    assert payload["targets"][0]["target_weight"] == 0.18

@@ -205,6 +205,18 @@ def test_score_weighted_buy_sizing_uses_target_weights():
     assert [(order.ticker, order.qty) for order in buys] == [("AAA", 70), ("BBB", 30)]
 
 
+def test_buy_budget_multiplier_scales_orders_without_exceeding_budget():
+    _, buys = compute_rebalance_orders(
+        holdings=[],
+        target_tickers=["AAA", "BBB"],
+        prices={"AAA": 100, "BBB": 100},
+        cash=1_000,
+        target_weights={"AAA": 0.60, "BBB": 0.60},
+    )
+
+    assert [(order.ticker, order.qty) for order in buys] == [("AAA", 6), ("BBB", 4)]
+
+
 # ------------------------------------------------------------------
 # execute_rebalance 테스트
 # ------------------------------------------------------------------

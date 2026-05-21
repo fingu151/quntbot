@@ -31,6 +31,12 @@ from src.trading.rebalancer import (
     compute_rebalance_orders,
     is_execution_gap_too_large,
 )
+from src.trading.us_market_risk import (
+    UsMarketBuyAdjustment,
+    calculate_us_market_buy_adjustment,
+    load_us_index_closes,
+    scale_target_weights,
+)
 
 
 ScoreFunction = Callable[..., list[FactorScore]]
@@ -118,6 +124,14 @@ def run(
             min_weight=PORTFOLIO.min_position_weight,
             max_weight=PORTFOLIO.max_position_weight,
         )
+    us_market_adjustment = calculate_us_market_buy_adjustment(
+        load_us_index_closes(engine, as_of_date=args.as_of_date),
+        as_of_date=args.as_of_date,
+    )
+    target_weights = scale_target_weights(
+        target_weights,
+        us_market_adjustment.buy_budget_multiplier,
+    )
     prices: dict[str, int] = {}
     previous_closes: dict[str, int] = {}
     price_failures: list[str] = []
@@ -187,6 +201,7 @@ def run(
         cash=cash,
         sell_eligible_tickers=sell_eligible_tickers,
         target_weights=target_weights,
+        buy_budget_multiplier=us_market_adjustment.buy_budget_multiplier,
     )
     report = _format_markdown_report(
         as_of_date=args.as_of_date,
@@ -200,6 +215,7 @@ def run(
         price_failures=price_failures,
         price_fallbacks=price_fallbacks,
         price_retry_attempts=price_retry_attempts,
+        us_market_adjustment=us_market_adjustment,
     )
     json_report = _format_json_report(
         as_of_date=args.as_of_date,
@@ -213,6 +229,7 @@ def run(
         price_failures=price_failures,
         price_fallbacks=price_fallbacks,
         price_retry_attempts=price_retry_attempts,
+        us_market_adjustment=us_market_adjustment,
     )
 
     _print_csv_summary(args.as_of_date, target_scores, cash, sells, buys)
@@ -261,6 +278,7 @@ def _format_markdown_report(
     price_failures: list[str],
     price_fallbacks: dict[str, int],
     price_retry_attempts: list[dict[str, Any]],
+    us_market_adjustment: UsMarketBuyAdjustment,
 ) -> str:
     retry_success_count = sum(1 for item in price_retry_attempts if item["status"] == "success")
     retry_failed_count = sum(1 for item in price_retry_attempts if item["status"] == "failed")
@@ -278,6 +296,9 @@ def _format_markdown_report(
         f"- price_fallback_count: `{len(price_fallbacks)}`",
         f"- price_retry_success_count: `{retry_success_count}`",
         f"- price_retry_failed_count: `{retry_failed_count}`",
+        f"- us_market_risk_status: `{us_market_adjustment.status}`",
+        f"- us_market_buy_budget_multiplier: `{us_market_adjustment.buy_budget_multiplier:.2f}`",
+        f"- us_market_cash_target: `{us_market_adjustment.cash_target:.2%}`",
         "",
         "## Target Portfolio",
         "",
@@ -346,6 +367,7 @@ def _format_json_report(
     price_failures: list[str],
     price_fallbacks: dict[str, int],
     price_retry_attempts: list[dict[str, Any]],
+    us_market_adjustment: UsMarketBuyAdjustment,
 ) -> dict[str, Any]:
     retry_success_count = sum(1 for item in price_retry_attempts if item["status"] == "success")
     retry_failed_count = sum(1 for item in price_retry_attempts if item["status"] == "failed")
@@ -363,6 +385,13 @@ def _format_json_report(
         "price_retry_success_count": retry_success_count,
         "price_retry_failed_count": retry_failed_count,
         "price_retry_attempts": price_retry_attempts,
+        "us_market_risk": {
+            "status": us_market_adjustment.status,
+            "buy_budget_multiplier": us_market_adjustment.buy_budget_multiplier,
+            "cash_target": us_market_adjustment.cash_target,
+            "reasons": us_market_adjustment.reasons,
+            "returns": us_market_adjustment.returns,
+        },
         "targets": [
             {
                 "rank": score.rank,

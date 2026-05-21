@@ -32,6 +32,7 @@ def compute_rebalance_orders(
     portfolio: PortfolioConfig = PORTFOLIO,
     sell_eligible_tickers: list[str] | set[str] | None = None,
     target_weights: dict[str, float] | None = None,
+    buy_budget_multiplier: float = 1.0,
 ) -> tuple[list[RebalanceOrder], list[RebalanceOrder]]:
     """현재 보유 종목과 목표 종목을 비교해 매도/매수 주문 목록을 반환한다.
 
@@ -73,6 +74,10 @@ def compute_rebalance_orders(
 
     available_cash = cash + expected_sell_proceeds
     weights = target_weights or {}
+    buy_budget_cash = max(0.0, available_cash * buy_budget_multiplier)
+    if weights:
+        buy_budget_cash = float(available_cash)
+    initial_buy_budget_cash = buy_budget_cash
 
     buys: list[RebalanceOrder] = []
     for ticker in buy_targets:
@@ -95,10 +100,11 @@ def compute_rebalance_orders(
             continue
 
         if weights:
-            budget = available_cash * max(weights.get(ticker, 0.0), 0.0)
+            budget = initial_buy_budget_cash * max(weights.get(ticker, 0.0), 0.0)
         else:
-            budget = available_cash / len(buy_targets)
+            budget = initial_buy_budget_cash / len(buy_targets)
         qty = math.floor(budget / price)
+        qty = min(qty, math.floor(buy_budget_cash / price))
         if portfolio.enforce_price_filter and qty <= 0:
             logger.warning(
                 f"[rebalancer] {ticker} price {price:,} exceeds budget {budget:,.0f}; buy skipped"
@@ -111,6 +117,7 @@ def compute_rebalance_orders(
             qty=qty,
             reason=f"target portfolio entry (budget {budget:,.0f} / {price:,} = {qty} shares)",
         ))
+        buy_budget_cash -= qty * price
         logger.info(f"[리밸런서] 매수 예정: {ticker} {qty}주 ({price:,}원)")
 
     return sells, buys

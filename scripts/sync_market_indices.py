@@ -38,6 +38,7 @@ def run(
     args: argparse.Namespace,
     *,
     krx_fetcher: IndexFetchFunction | None = None,
+    us_fetcher: IndexFetchFunction | None = None,
     nasdaq_fetcher: IndexFetchFunction | None = None,
 ) -> int:
     engine = get_engine(args.database_url)
@@ -47,7 +48,8 @@ def run(
     if not args.skip_krx:
         rows.extend((krx_fetcher or fetch_krx_indices)(args.start_date, args.end_date))
     if not args.skip_nasdaq:
-        rows.extend((nasdaq_fetcher or fetch_nasdaq_index)(args.start_date, args.end_date))
+        fetcher = us_fetcher or nasdaq_fetcher or fetch_us_indices
+        rows.extend(fetcher(args.start_date, args.end_date))
 
     with session_scope(engine) as session:
         count = upsert_market_index_prices(session, rows)
@@ -69,11 +71,31 @@ def fetch_krx_indices(start_date: date, end_date: date) -> list[dict[str, Any]]:
     return rows
 
 
+def fetch_us_indices(start_date: date, end_date: date) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for symbol, yahoo_symbol in (
+        ("NASDAQ", "%5EIXIC"),
+        ("SP500", "%5EGSPC"),
+        ("DOW", "%5EDJI"),
+    ):
+        rows.extend(_fetch_yahoo_index(symbol, yahoo_symbol, start_date, end_date))
+    return rows
+
+
 def fetch_nasdaq_index(start_date: date, end_date: date) -> list[dict[str, Any]]:
+    return _fetch_yahoo_index("NASDAQ", "%5EIXIC", start_date, end_date)
+
+
+def _fetch_yahoo_index(
+    symbol: str,
+    yahoo_symbol: str,
+    start_date: date,
+    end_date: date,
+) -> list[dict[str, Any]]:
     period1 = int(datetime.combine(start_date, time.min, tzinfo=timezone.utc).timestamp())
     period2 = int(datetime.combine(end_date, time.max, tzinfo=timezone.utc).timestamp())
     url = (
-        "https://query1.finance.yahoo.com/v8/finance/chart/%5EIXIC"
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
         f"?period1={period1}&period2={period2}&interval=1d&events=history"
     )
     response = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
@@ -92,7 +114,7 @@ def fetch_nasdaq_index(start_date: date, end_date: date) -> list[dict[str, Any]]
             continue
         rows.append(
             {
-                "symbol": "NASDAQ",
+                "symbol": symbol,
                 "date": datetime.fromtimestamp(int(timestamp), tz=timezone.utc).date(),
                 "open": _sequence_value(quote.get("open"), index),
                 "high": _sequence_value(quote.get("high"), index),

@@ -44,7 +44,7 @@ def test_run_upserts_fake_market_index_rows(tmp_path):
             }
         ]
 
-    def fake_nasdaq(start_date, end_date):
+    def fake_us(start_date, end_date):
         assert start_date == date(2026, 1, 1)
         assert end_date == date(2026, 1, 2)
         return [
@@ -56,14 +56,37 @@ def test_run_upserts_fake_market_index_rows(tmp_path):
                 "low": 198,
                 "close": 201,
                 "volume": 20,
-            }
+            },
+            {
+                "symbol": "SP500",
+                "date": date(2026, 1, 1),
+                "open": 300,
+                "high": 303,
+                "low": 297,
+                "close": 302,
+                "volume": 30,
+            },
+            {
+                "symbol": "DOW",
+                "date": date(2026, 1, 1),
+                "open": 400,
+                "high": 404,
+                "low": 396,
+                "close": 403,
+                "volume": 40,
+            },
         ]
 
-    exit_code = sync_market_indices.run(args, krx_fetcher=fake_krx, nasdaq_fetcher=fake_nasdaq)
+    exit_code = sync_market_indices.run(args, krx_fetcher=fake_krx, us_fetcher=fake_us)
 
     assert exit_code == 0
     engine = sync_market_indices.get_engine(database_url)
     with session_scope(engine) as session:
         rows = session.scalars(select(MarketIndexPrice).order_by(MarketIndexPrice.symbol)).all()
 
-    assert [(row.symbol, row.close) for row in rows] == [("KOSPI", 100), ("NASDAQ", 201)]
+    assert [(row.symbol, row.close) for row in rows] == [
+        ("DOW", 403),
+        ("KOSPI", 100),
+        ("NASDAQ", 201),
+        ("SP500", 302),
+    ]

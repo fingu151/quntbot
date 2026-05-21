@@ -23,6 +23,11 @@ from src.trading.engine import TradingEngine
 from src.trading.kis_client import KisClient
 from src.trading.rebalance_policy import compute_rebalance_sell_eligible_tickers
 from src.trading.rebalancer import compute_rebalance_orders, execute_rebalance
+from src.trading.us_market_risk import (
+    calculate_us_market_buy_adjustment,
+    load_us_index_closes,
+    scale_target_weights,
+)
 
 
 @dataclass
@@ -189,6 +194,21 @@ def _rebalance_job(
                 min_weight=PORTFOLIO.min_position_weight,
                 max_weight=PORTFOLIO.max_position_weight,
             )
+        us_market_adjustment = calculate_us_market_buy_adjustment(
+            load_us_index_closes(db_engine, as_of_date=run_date),
+            as_of_date=run_date,
+        )
+        target_weights = scale_target_weights(
+            target_weights,
+            us_market_adjustment.buy_budget_multiplier,
+        )
+        if us_market_adjustment.status in {"risk_off", "risk_on"}:
+            logger.info(
+                "US market buy adjustment: "
+                f"status={us_market_adjustment.status}, "
+                f"multiplier={us_market_adjustment.buy_budget_multiplier:.2f}, "
+                f"reasons={us_market_adjustment.reasons}"
+            )
 
         sells, buys = compute_rebalance_orders(
             holdings=holdings,
@@ -198,6 +218,9 @@ def _rebalance_job(
             cash=cash,
             sell_eligible_tickers=sell_eligible_tickers,
             target_weights={} if risk_off_sell_only else target_weights,
+            buy_budget_multiplier=(
+                1.0 if risk_off_sell_only else us_market_adjustment.buy_budget_multiplier
+            ),
         )
         if risk_off_sell_only:
             logger.warning("Risk-off mode active: rebalance buys suppressed.")
