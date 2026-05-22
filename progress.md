@@ -1,5 +1,36 @@
 # quntbot Progress Log
 
+## 2026-05-22 Bond-yield risk overlay
+
+### Completed
+
+- Added a bond-yield risk overlay that reads `KR10Y` and `US10Y` from
+  `market_index_prices`.
+- Applied the overlay to both dry-run rebalance reports and the scheduled
+  rebalance path by combining it with the existing US-market index multiplier.
+- Extended market index sync so `KR10Y` can come from pykrx OTC treasury
+  yields and `US10Y` can come from Yahoo `^TNX`, with US yield scale
+  normalization.
+- Dry-run JSON now includes `bond_yield_risk` and
+  `combined_buy_budget_multiplier`.
+
+### Rules
+
+- +15bp or more in one 10Y yield: reduce buys to `0.85x`.
+- +30bp in one 10Y yield, or both KR/US 10Y yields +15bp or more: reduce buys
+  to `0.70x`.
+- -15bp or more in one 10Y yield: increase buys to `1.10x`.
+- -30bp in one 10Y yield, or both KR/US 10Y yields -15bp or more: increase
+  buys to `1.20x`.
+- Mixed one-up/one-down bond signals stay neutral. Missing yield history stays
+  neutral.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\data\test_sync_market_indices.py tests\trading\test_us_market_risk.py tests\trading\test_bond_yield_risk.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py`
+  -> `44 passed`.
+- `.\venv\Scripts\python.exe -m compileall src scripts tests` -> passed.
+
 ## 2026-05-14 Hankyung consensus research pipeline
 
 ### Completed

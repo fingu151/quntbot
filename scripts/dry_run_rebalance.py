@@ -21,6 +21,12 @@ from src.data.models import DailyPrice
 from src.factors.engine import calculate_factor_scores
 from src.factors.models import FactorScore
 from src.trading.allocation import compute_score_weights
+from src.trading.bond_yield_risk import (
+    BondYieldAdjustment,
+    calculate_bond_yield_adjustment,
+    combine_buy_budget_multipliers,
+    load_bond_yield_closes,
+)
 from src.trading.kis_client import KisClient
 from src.trading.rebalance_policy import (
     compute_rebalance_sell_eligible_tickers,
@@ -128,9 +134,17 @@ def run(
         load_us_index_closes(engine, as_of_date=args.as_of_date),
         as_of_date=args.as_of_date,
     )
+    bond_yield_adjustment = calculate_bond_yield_adjustment(
+        load_bond_yield_closes(engine, as_of_date=args.as_of_date),
+        as_of_date=args.as_of_date,
+    )
+    combined_buy_budget_multiplier = combine_buy_budget_multipliers(
+        us_market_adjustment.buy_budget_multiplier,
+        bond_yield_adjustment.buy_budget_multiplier,
+    )
     target_weights = scale_target_weights(
         target_weights,
-        us_market_adjustment.buy_budget_multiplier,
+        combined_buy_budget_multiplier,
     )
     prices: dict[str, int] = {}
     previous_closes: dict[str, int] = {}
@@ -201,7 +215,7 @@ def run(
         cash=cash,
         sell_eligible_tickers=sell_eligible_tickers,
         target_weights=target_weights,
-        buy_budget_multiplier=us_market_adjustment.buy_budget_multiplier,
+        buy_budget_multiplier=combined_buy_budget_multiplier,
     )
     report = _format_markdown_report(
         as_of_date=args.as_of_date,
@@ -216,6 +230,8 @@ def run(
         price_fallbacks=price_fallbacks,
         price_retry_attempts=price_retry_attempts,
         us_market_adjustment=us_market_adjustment,
+        bond_yield_adjustment=bond_yield_adjustment,
+        combined_buy_budget_multiplier=combined_buy_budget_multiplier,
     )
     json_report = _format_json_report(
         as_of_date=args.as_of_date,
@@ -230,6 +246,8 @@ def run(
         price_fallbacks=price_fallbacks,
         price_retry_attempts=price_retry_attempts,
         us_market_adjustment=us_market_adjustment,
+        bond_yield_adjustment=bond_yield_adjustment,
+        combined_buy_budget_multiplier=combined_buy_budget_multiplier,
     )
 
     _print_csv_summary(args.as_of_date, target_scores, cash, sells, buys)
@@ -279,6 +297,8 @@ def _format_markdown_report(
     price_fallbacks: dict[str, int],
     price_retry_attempts: list[dict[str, Any]],
     us_market_adjustment: UsMarketBuyAdjustment,
+    bond_yield_adjustment: BondYieldAdjustment,
+    combined_buy_budget_multiplier: float,
 ) -> str:
     retry_success_count = sum(1 for item in price_retry_attempts if item["status"] == "success")
     retry_failed_count = sum(1 for item in price_retry_attempts if item["status"] == "failed")
@@ -299,6 +319,10 @@ def _format_markdown_report(
         f"- us_market_risk_status: `{us_market_adjustment.status}`",
         f"- us_market_buy_budget_multiplier: `{us_market_adjustment.buy_budget_multiplier:.2f}`",
         f"- us_market_cash_target: `{us_market_adjustment.cash_target:.2%}`",
+        f"- bond_yield_risk_status: `{bond_yield_adjustment.status}`",
+        f"- bond_yield_buy_budget_multiplier: `{bond_yield_adjustment.buy_budget_multiplier:.2f}`",
+        f"- bond_yield_cash_target: `{bond_yield_adjustment.cash_target:.2%}`",
+        f"- combined_buy_budget_multiplier: `{combined_buy_budget_multiplier:.2f}`",
         "",
         "## Target Portfolio",
         "",
@@ -368,6 +392,8 @@ def _format_json_report(
     price_fallbacks: dict[str, int],
     price_retry_attempts: list[dict[str, Any]],
     us_market_adjustment: UsMarketBuyAdjustment,
+    bond_yield_adjustment: BondYieldAdjustment,
+    combined_buy_budget_multiplier: float,
 ) -> dict[str, Any]:
     retry_success_count = sum(1 for item in price_retry_attempts if item["status"] == "success")
     retry_failed_count = sum(1 for item in price_retry_attempts if item["status"] == "failed")
@@ -392,6 +418,14 @@ def _format_json_report(
             "reasons": us_market_adjustment.reasons,
             "returns": us_market_adjustment.returns,
         },
+        "bond_yield_risk": {
+            "status": bond_yield_adjustment.status,
+            "buy_budget_multiplier": bond_yield_adjustment.buy_budget_multiplier,
+            "cash_target": bond_yield_adjustment.cash_target,
+            "reasons": bond_yield_adjustment.reasons,
+            "changes_bp": bond_yield_adjustment.changes_bp,
+        },
+        "combined_buy_budget_multiplier": combined_buy_budget_multiplier,
         "targets": [
             {
                 "rank": score.rank,

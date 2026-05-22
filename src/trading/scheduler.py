@@ -19,6 +19,11 @@ from src.signals.research_report_reader import fetch_and_store_korean_research_r
 from src.signals.telegram_reader import fetch_and_store_signals
 from src.factors.engine import calculate_factor_scores
 from src.trading.allocation import compute_score_weights
+from src.trading.bond_yield_risk import (
+    calculate_bond_yield_adjustment,
+    combine_buy_budget_multipliers,
+    load_bond_yield_closes,
+)
 from src.trading.engine import TradingEngine
 from src.trading.kis_client import KisClient
 from src.trading.rebalance_policy import compute_rebalance_sell_eligible_tickers
@@ -198,9 +203,17 @@ def _rebalance_job(
             load_us_index_closes(db_engine, as_of_date=run_date),
             as_of_date=run_date,
         )
+        bond_yield_adjustment = calculate_bond_yield_adjustment(
+            load_bond_yield_closes(db_engine, as_of_date=run_date),
+            as_of_date=run_date,
+        )
+        combined_buy_budget_multiplier = combine_buy_budget_multipliers(
+            us_market_adjustment.buy_budget_multiplier,
+            bond_yield_adjustment.buy_budget_multiplier,
+        )
         target_weights = scale_target_weights(
             target_weights,
-            us_market_adjustment.buy_budget_multiplier,
+            combined_buy_budget_multiplier,
         )
         if us_market_adjustment.status in {"risk_off", "risk_on"}:
             logger.info(
@@ -208,6 +221,13 @@ def _rebalance_job(
                 f"status={us_market_adjustment.status}, "
                 f"multiplier={us_market_adjustment.buy_budget_multiplier:.2f}, "
                 f"reasons={us_market_adjustment.reasons}"
+            )
+        if bond_yield_adjustment.status in {"risk_off", "risk_on"}:
+            logger.info(
+                "Bond yield buy adjustment: "
+                f"status={bond_yield_adjustment.status}, "
+                f"multiplier={bond_yield_adjustment.buy_budget_multiplier:.2f}, "
+                f"reasons={bond_yield_adjustment.reasons}"
             )
 
         sells, buys = compute_rebalance_orders(
@@ -219,7 +239,7 @@ def _rebalance_job(
             sell_eligible_tickers=sell_eligible_tickers,
             target_weights={} if risk_off_sell_only else target_weights,
             buy_budget_multiplier=(
-                1.0 if risk_off_sell_only else us_market_adjustment.buy_budget_multiplier
+                1.0 if risk_off_sell_only else combined_buy_budget_multiplier
             ),
         )
         if risk_off_sell_only:

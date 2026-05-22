@@ -19,6 +19,7 @@ from src.data.repositories import upsert_market_index_prices
 
 
 IndexFetchFunction = Callable[[date, date], list[dict[str, Any]]]
+ValueTransform = Callable[[float | None], float | None]
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -28,6 +29,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--skip-krx", action="store_true")
     parser.add_argument("--skip-nasdaq", action="store_true")
+    parser.add_argument("--skip-bond-yields", action="store_true")
     args = parser.parse_args(argv)
     if args.start_date > args.end_date:
         parser.error("--start-date must be on or before --end-date")
@@ -40,6 +42,7 @@ def run(
     krx_fetcher: IndexFetchFunction | None = None,
     us_fetcher: IndexFetchFunction | None = None,
     nasdaq_fetcher: IndexFetchFunction | None = None,
+    bond_yield_fetcher: IndexFetchFunction | None = None,
 ) -> int:
     engine = get_engine(args.database_url)
     create_tables(engine)
@@ -50,6 +53,8 @@ def run(
     if not args.skip_nasdaq:
         fetcher = us_fetcher or nasdaq_fetcher or fetch_us_indices
         rows.extend(fetcher(args.start_date, args.end_date))
+    if not args.skip_bond_yields:
+        rows.extend((bond_yield_fetcher or fetch_bond_yields)(args.start_date, args.end_date))
 
     with session_scope(engine) as session:
         count = upsert_market_index_prices(session, rows)
@@ -86,11 +91,59 @@ def fetch_nasdaq_index(start_date: date, end_date: date) -> list[dict[str, Any]]
     return _fetch_yahoo_index("NASDAQ", "%5EIXIC", start_date, end_date)
 
 
+def fetch_bond_yields(start_date: date, end_date: date) -> list[dict[str, Any]]:
+    return fetch_kr_treasury_10y_yield(start_date, end_date) + fetch_us_treasury_10y_yield(
+        start_date,
+        end_date,
+    )
+
+
+def fetch_kr_treasury_10y_yield(start_date: date, end_date: date) -> list[dict[str, Any]]:
+    from pykrx import bond
+
+    frame = bond.get_otc_treasury_yields(
+        _format_date(start_date),
+        _format_date(end_date),
+        "국고채10년",
+    )
+    if frame.empty:
+        return []
+    rows = []
+    for index_date, row in frame.iterrows():
+        close = _float_or_none(row.get("수익률"))
+        if close is None:
+            continue
+        rows.append(
+            {
+                "symbol": "KR10Y",
+                "date": index_date.date() if hasattr(index_date, "date") else date.fromisoformat(str(index_date)),
+                "open": None,
+                "high": None,
+                "low": None,
+                "close": close,
+                "volume": None,
+            }
+        )
+    return rows
+
+
+def fetch_us_treasury_10y_yield(start_date: date, end_date: date) -> list[dict[str, Any]]:
+    return _fetch_yahoo_index(
+        "US10Y",
+        "%5ETNX",
+        start_date,
+        end_date,
+        value_transform=_normalize_us_10y_yield,
+    )
+
+
 def _fetch_yahoo_index(
     symbol: str,
     yahoo_symbol: str,
     start_date: date,
     end_date: date,
+    *,
+    value_transform: ValueTransform | None = None,
 ) -> list[dict[str, Any]]:
     period1 = int(datetime.combine(start_date, time.min, tzinfo=timezone.utc).timestamp())
     period2 = int(datetime.combine(end_date, time.max, tzinfo=timezone.utc).timestamp())
@@ -109,16 +162,16 @@ def _fetch_yahoo_index(
     quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
     rows = []
     for index, timestamp in enumerate(timestamps):
-        close = _sequence_value(quote.get("close"), index)
+        close = _sequence_value(quote.get("close"), index, value_transform=value_transform)
         if close is None:
             continue
         rows.append(
             {
                 "symbol": symbol,
                 "date": datetime.fromtimestamp(int(timestamp), tz=timezone.utc).date(),
-                "open": _sequence_value(quote.get("open"), index),
-                "high": _sequence_value(quote.get("high"), index),
-                "low": _sequence_value(quote.get("low"), index),
+                "open": _sequence_value(quote.get("open"), index, value_transform=value_transform),
+                "high": _sequence_value(quote.get("high"), index, value_transform=value_transform),
+                "low": _sequence_value(quote.get("low"), index, value_transform=value_transform),
                 "close": close,
                 "volume": _sequence_value(quote.get("volume"), index),
             }
@@ -152,10 +205,26 @@ def _float_or_none(value: Any) -> float | None:
     return float(value)
 
 
-def _sequence_value(values: Any, index: int) -> float | None:
+def _sequence_value(
+    values: Any,
+    index: int,
+    *,
+    value_transform: ValueTransform | None = None,
+) -> float | None:
     if not isinstance(values, list) or index >= len(values):
         return None
-    return _float_or_none(values[index])
+    value = _float_or_none(values[index])
+    if value_transform is not None:
+        return value_transform(value)
+    return value
+
+
+def _normalize_us_10y_yield(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if value > 20:
+        return value / 10.0
+    return value
 
 
 def _format_date(value: date) -> str:

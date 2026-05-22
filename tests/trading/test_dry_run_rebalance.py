@@ -605,3 +605,46 @@ def test_run_scales_buy_weights_after_positive_us_market_session(tmp_path):
     assert payload["us_market_risk"]["status"] == "risk_on"
     assert payload["us_market_risk"]["buy_budget_multiplier"] == 1.2
     assert payload["targets"][0]["target_weight"] == 0.18
+
+
+def test_run_scales_buy_weights_after_bond_yields_rise(tmp_path):
+    import scripts.dry_run_rebalance as dry_run
+
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_market_index_prices(
+            session,
+            [
+                {"symbol": "KR10Y", "date": date(2026, 5, 6), "close": 3.40},
+                {"symbol": "KR10Y", "date": date(2026, 5, 7), "close": 3.57},
+                {"symbol": "US10Y", "date": date(2026, 5, 6), "close": 4.30},
+                {"symbol": "US10Y", "date": date(2026, 5, 7), "close": 4.47},
+            ],
+        )
+    client = _client()
+    client.get_balance.return_value["output1"] = []
+    report_path = tmp_path / "dry_run.json"
+    args = dry_run.parse_args([
+        "--as-of-date",
+        "2026-05-08",
+        "--top-n",
+        "1",
+        "--output-json",
+        str(report_path),
+    ])
+
+    result = dry_run.run(
+        args,
+        db_engine=engine,
+        client_factory=MagicMock(return_value=client),
+        score_func=MagicMock(return_value=[_score("NEW", 1)]),
+    )
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert result == 0
+    assert payload["bond_yield_risk"]["status"] == "risk_off"
+    assert payload["bond_yield_risk"]["buy_budget_multiplier"] == 0.7
+    assert payload["combined_buy_budget_multiplier"] == 0.7
+    assert payload["targets"][0]["target_weight"] == 0.105

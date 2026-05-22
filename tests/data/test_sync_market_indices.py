@@ -77,7 +77,36 @@ def test_run_upserts_fake_market_index_rows(tmp_path):
             },
         ]
 
-    exit_code = sync_market_indices.run(args, krx_fetcher=fake_krx, us_fetcher=fake_us)
+    def fake_bond_yields(start_date, end_date):
+        assert start_date == date(2026, 1, 1)
+        assert end_date == date(2026, 1, 2)
+        return [
+            {
+                "symbol": "KR10Y",
+                "date": date(2026, 1, 1),
+                "open": None,
+                "high": None,
+                "low": None,
+                "close": 3.2,
+                "volume": None,
+            },
+            {
+                "symbol": "US10Y",
+                "date": date(2026, 1, 1),
+                "open": None,
+                "high": None,
+                "low": None,
+                "close": 4.4,
+                "volume": None,
+            },
+        ]
+
+    exit_code = sync_market_indices.run(
+        args,
+        krx_fetcher=fake_krx,
+        us_fetcher=fake_us,
+        bond_yield_fetcher=fake_bond_yields,
+    )
 
     assert exit_code == 0
     engine = sync_market_indices.get_engine(database_url)
@@ -87,6 +116,14 @@ def test_run_upserts_fake_market_index_rows(tmp_path):
     assert [(row.symbol, row.close) for row in rows] == [
         ("DOW", 403),
         ("KOSPI", 100),
+        ("KR10Y", 3.2),
         ("NASDAQ", 201),
         ("SP500", 302),
+        ("US10Y", 4.4),
     ]
+
+
+def test_us_10y_yield_normalizer_handles_yahoo_index_scale():
+    assert sync_market_indices._normalize_us_10y_yield(44.5) == 4.45
+    assert sync_market_indices._normalize_us_10y_yield(4.45) == 4.45
+    assert sync_market_indices._normalize_us_10y_yield(None) is None
