@@ -633,6 +633,22 @@
 - `SAFETY.max_daily_buys` remains `10`; this keeps daily execution throttled while allowing the 30-name target list to be filled over multiple sessions.
 - KIS quote retry rows with `status=success` are recovered current-price lookup failures, not failed orders.
 
+## 2026-05-22 PAPER Daily Buy Limit Adjustment
+
+### Completed
+
+- Raised `SAFETY.max_daily_buys` from `10` to `20`.
+- Reason: the 2026-05-22 dry-run already targets `30` holdings and produced `buy_count=20`, but readiness blocked execution with `daily buy limit would be exceeded (20/10)`.
+- `SAFETY.max_daily_sells` remains `10`; sell-side execution throttling is unchanged.
+- PAPER confirmation, dry-run preflight, quote failure checks, stale-report checks, and market-time readiness remain unchanged.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\test_strategy_defaults.py tests\trading\test_rebalancer.py::test_execute_rebalance_allows_twenty_daily_buys tests\trading\test_rebalancer.py::test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit -q` -> failed because `SAFETY.max_daily_buys` was still `10` and preflight blocked `(20/10)`.
+- Targeted tests: `.\venv\Scripts\python.exe -m pytest tests\test_strategy_defaults.py tests\trading\test_rebalancer.py tests\trading\test_execute_rebalance_from_dry_run.py tests\trading\test_check_rebalance_readiness.py -q` -> 40 passed.
+- Readiness recheck on the current 2026-05-22 dry-run: `.\venv\Scripts\python.exe scripts\check_rebalance_readiness.py --dry-run-json data\dry_run_rebalance_latest.json --expected-date 2026-05-22` -> `preflight_status=clean`, `execution_ready=true`.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall config.py src\trading\rebalancer.py scripts\check_rebalance_readiness.py tests\test_strategy_defaults.py tests\trading\test_rebalancer.py tests\trading\test_check_rebalance_readiness.py` -> passed.
+
 ## 2026-05-21 US Market Risk Buy Adjustment
 
 ### Completed

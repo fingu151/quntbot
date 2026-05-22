@@ -1,4 +1,4 @@
-from config import EXIT_RULES, REBALANCE
+from config import EXIT_RULES, REBALANCE, SAFETY
 
 
 def test_adopted_exit_strategy_defaults_match_tuned_adaptive_alpha():
@@ -12,3 +12,4 @@ def test_adopted_exit_strategy_defaults_match_tuned_adaptive_alpha():
     assert EXIT_RULES.atr_window == 14
     assert EXIT_RULES.atr_multiplier == 2.2
     assert REBALANCE.sell_rank_buffer == 40
+    assert SAFETY.max_daily_buys == 20

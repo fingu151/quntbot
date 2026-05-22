@@ -311,14 +311,15 @@ def test_execute_rebalance_blocks_orders_when_dry_run_report_is_stale(tmp_path):
     engine.buy.assert_not_called()
 
 
-def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp_path):
+def test_execute_rebalance_allows_twenty_daily_buys(tmp_path):
     engine = MagicMock()
+    engine.buy.return_value = {"rt_cd": "0"}
     report_path = tmp_path / "dry_run.json"
     report_path.write_text(
         json.dumps({
             "dry_run": True,
             "as_of_date": "2026-05-08",
-            "buy_count": 11,
+            "buy_count": 20,
             "sell_count": 0,
             "price_fallback_count": 0,
             "price_lookup_failed_count": 0,
@@ -329,7 +330,40 @@ def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp
     )
     buys = [
         RebalanceOrder(f"{idx:06d}", "BUY", 1, "include")
-        for idx in range(11)
+        for idx in range(20)
+    ]
+
+    result = execute_rebalance(
+        engine,
+        [],
+        buys,
+        preflight_report_path=report_path,
+        expected_preflight_date=date(2026, 5, 8),
+    )
+
+    assert len(result["bought"]) == 20
+    assert engine.buy.call_count == 20
+
+
+def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp_path):
+    engine = MagicMock()
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 21,
+            "sell_count": 0,
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+        }),
+        encoding="utf-8",
+    )
+    buys = [
+        RebalanceOrder(f"{idx:06d}", "BUY", 1, "include")
+        for idx in range(21)
     ]
 
     with pytest.raises(RuntimeError, match="daily buy limit"):
