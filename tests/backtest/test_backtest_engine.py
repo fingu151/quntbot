@@ -691,7 +691,7 @@ def test_rebalance_buffer_keeps_rank_just_outside_top_n():
     assert [trade.reason for trade in result.trades if trade.side == "SELL"] == []
 
 
-def test_rebalance_min_holding_blocks_early_rebalance_sell():
+def test_rebalance_sell_is_not_blocked_by_min_holding_days():
     engine = get_engine("sqlite:///:memory:")
     create_tables(engine)
     seed_prices_for_tickers(engine, ["AAA", "BBB"], start=date(2026, 1, 1), days=6, price=100)
@@ -709,7 +709,7 @@ def test_rebalance_min_holding_blocks_early_rebalance_sell():
         initial_capital=10_000,
         top_n=1,
         sell_rank_buffer=1,
-        min_holding_trading_days=2,
+        min_holding_trading_days=99,
         rebalance_frequency="daily",
         commission_rate=0.0,
         tax_rate_kospi=0.0,

@@ -164,7 +164,7 @@ def test_run_prints_and_writes_rebalance_report_without_orders(tmp_path, capsys)
     client.place_order.assert_not_called()
 
 
-def test_run_blocks_rebalance_sell_when_entry_state_is_missing(capsys):
+def test_run_allows_rebalance_sell_when_entry_state_is_missing(capsys):
     import scripts.dry_run_rebalance as dry_run
 
     engine = get_engine("sqlite:///:memory:")
@@ -189,11 +189,11 @@ def test_run_blocks_rebalance_sell_when_entry_state_is_missing(capsys):
     output = capsys.readouterr().out
 
     assert result == 0
-    assert "SELL,OLD" not in output
+    assert "SELL,OLD,3" in output
     client.place_order.assert_not_called()
 
 
-def test_run_blocks_rebalance_sell_until_min_holding_days(tmp_path, capsys):
+def test_run_allows_rebalance_sell_on_recent_entry(tmp_path, capsys):
     import scripts.dry_run_rebalance as dry_run
 
     engine = get_engine("sqlite:///:memory:")
@@ -227,7 +227,7 @@ def test_run_blocks_rebalance_sell_until_min_holding_days(tmp_path, capsys):
     output = capsys.readouterr().out
 
     assert result == 0
-    assert "SELL,OLD" not in output
+    assert "SELL,OLD,3" in output
     client.place_order.assert_not_called()
 
 
@@ -350,7 +350,8 @@ def test_run_uses_latest_db_close_when_quote_fails_and_fallback_enabled(capsys):
 
     assert result == 0
     assert "price_fallback,NEW,10000" in output
-    assert "BUY,NEW,1" in output
+    assert "SELL,OLD,3" in output
+    assert "BUY,NEW,2" in output
     client.place_order.assert_not_called()
 
 
@@ -384,7 +385,8 @@ def test_run_retries_quote_lookup_before_fallback(capsys):
     output = capsys.readouterr().out
 
     assert result == 0
-    assert "BUY,NEW,1" in output
+    assert "SELL,OLD,3" in output
+    assert "BUY,NEW,2" in output
     assert "price_lookup_failed,NEW" not in output
     assert client.get_current_price.call_count == 2
     sleeper.assert_called_once_with(0.25)

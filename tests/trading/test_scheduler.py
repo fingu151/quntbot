@@ -186,7 +186,7 @@ def test_rebalance_job_passes_previous_closes_to_rebalancer():
     assert compute.call_args.kwargs["previous_closes"] == {"005930": 100000}
 
 
-def test_rebalance_job_applies_buffer_min_holding_and_target_weights():
+def test_rebalance_job_applies_buffer_and_target_weights_without_holding_age_gate():
     db_engine = get_engine("sqlite:///:memory:")
     create_tables(db_engine)
     with session_scope(db_engine) as session:
@@ -268,7 +268,7 @@ def test_rebalance_job_applies_buffer_min_holding_and_target_weights():
 
     engine.check_exit_rules.assert_called_once()
     engine.check_stop_loss.assert_not_called()
-    assert compute.call_args.kwargs["sell_eligible_tickers"] == ["HELD3"]
+    assert compute.call_args.kwargs["sell_eligible_tickers"] == ["HELD3", "NEWISH"]
     assert compute.call_args.kwargs["target_weights"] == {"TARGET": 0.15}
 
 

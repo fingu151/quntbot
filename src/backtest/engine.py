@@ -108,8 +108,6 @@ def run_backtest(
     equity_curve: list[EquityPoint] = []
     last_rebalance_key: tuple[int, ...] | None = None
     previous_trading_date: date | None = None
-    trading_day_index_by_date = {value: idx for idx, value in enumerate(trading_dates)}
-
     for trading_date in trading_dates:
         today_prices = prices_by_date[trading_date]
         close_prices = {ticker: price["close"] for ticker, price in today_prices.items()}
@@ -212,17 +210,9 @@ def run_backtest(
                 last_rebalance_key = rebalance_key
 
         for ticker in list(positions):
-            entry_date = entry_dates.get(ticker)
-            held_trading_days = 0
-            if entry_date is not None:
-                held_trading_days = max(
-                    0,
-                    trading_day_index_by_date[trading_date] - trading_day_index_by_date[entry_date],
-                )
             if (
                 ticker not in keep_tickers
                 and ticker not in forbidden_today
-                and held_trading_days >= min_holding_trading_days
                 and ticker in open_prices
             ):
                 quantity = positions[ticker]

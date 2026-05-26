@@ -1,5 +1,26 @@
 # quntbot Progress Log
 
+## 2026-05-26 Remove minimum holding sell gate
+
+### Completed
+
+- Removed the rebalance sell block that required an exit-state `entry_date`.
+- Removed the rebalance sell block that required `min_holding_trading_days`.
+- Set `REBALANCE.min_holding_trading_days` to `0` so current defaults match the
+  new behavior.
+- Aligned the backtest engine and Adaptive Alpha wrapper so historical tests no
+  longer assume a minimum holding-day gate.
+- Kept stop-loss, trailing, breakeven, stop-cooldown re-entry protection, daily
+  sell limits, and PAPER dry-run/preflight gates intact.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py tests\backtest\test_backtest_engine.py tests\strategies\test_adaptive_alpha.py tests\test_strategy_defaults.py`
+  -> `67 passed`.
+- `.\venv\Scripts\python.exe -m compileall config.py src scripts tests` ->
+  passed.
+- `git diff --check -- ...` -> passed.
+
 ## 2026-05-22 Bond-yield risk overlay
 
 ### Completed

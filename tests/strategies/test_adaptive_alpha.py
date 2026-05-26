@@ -134,5 +134,6 @@ def test_run_adaptive_alpha_backtest_passes_isolated_strategy_defaults():
     assert captured["atr_multiplier"] == 2.2
     assert captured["profit_take_pct"] == 0.16
     assert captured["sell_rank_buffer"] == 40
+    assert captured["min_holding_trading_days"] == 0
     assert captured["enable_market_risk_overlay"] is True
     assert callable(captured["scoring_func"])

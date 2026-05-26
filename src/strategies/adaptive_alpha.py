@@ -154,7 +154,7 @@ def run_adaptive_alpha_backtest(
         "profit_take_sell_fraction": config.profit_take_sell_fraction,
         "breakeven_stop_pct": config.breakeven_stop_pct,
         "sell_rank_buffer": config.sell_rank_buffer,
-        "min_holding_trading_days": 2,
+        "min_holding_trading_days": 0,
         "weighting": "score_weighted",
         "min_position_weight": config.min_position_weight,
         "max_position_weight": config.max_position_weight,

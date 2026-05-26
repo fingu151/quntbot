@@ -6,10 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
-
-from src.data.database import session_scope
-from src.data.models import DailyPrice
 from src.trading.exit_state import ExitStateStore
 
 
@@ -36,7 +32,8 @@ def compute_rebalance_sell_eligible_tickers(
     as_of_date: date,
     min_holding_trading_days: int,
 ) -> list[str]:
-    """Return holdings eligible for rebalance sells after buffer and age gates."""
+    """Return holdings eligible for rebalance sells after the rank buffer gate."""
+    del entry_dates, db_engine, as_of_date, min_holding_trading_days
     eligible: list[str] = []
     for holding in holdings:
         ticker = str(holding.get("ticker") or "")
@@ -44,48 +41,6 @@ def compute_rebalance_sell_eligible_tickers(
             continue
         if int(holding.get("qty", 0) or 0) <= 0:
             continue
-
-        entry_date = entry_dates.get(ticker)
-        if entry_date is None:
-            logger.warning(
-                f"rebalance sell blocked: ticker={ticker}, reason=missing_entry_date"
-            )
-            continue
-
-        held_days = count_trading_days_held(
-            db_engine,
-            entry_date=entry_date,
-            as_of_date=as_of_date,
-        )
-        if held_days < min_holding_trading_days:
-            logger.info(
-                f"rebalance sell blocked: ticker={ticker}, held_trading_days={held_days}, "
-                f"required={min_holding_trading_days}"
-            )
-            continue
-
         eligible.append(ticker)
 
     return sorted(eligible)
-
-
-def count_trading_days_held(
-    db_engine: object,
-    *,
-    entry_date: date,
-    as_of_date: date,
-) -> int:
-    """Count market trading dates strictly after entry through as-of date."""
-    if entry_date >= as_of_date:
-        return 0
-
-    with session_scope(db_engine) as session:
-        rows = session.scalars(
-            select(DailyPrice.date)
-            .where(
-                DailyPrice.date > entry_date,
-                DailyPrice.date <= as_of_date,
-            )
-            .distinct()
-        ).all()
-    return len(set(rows))

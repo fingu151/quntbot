@@ -280,7 +280,7 @@ class RebalanceConfig:
     # 정기 리밸런싱 주기
     frequency: Literal["daily", "weekly", "monthly"] = "weekly"
     sell_rank_buffer: int = 40
-    min_holding_trading_days: int = 2
+    min_holding_trading_days: int = 0
 
     # 장 시작 전 점수 재계산 시각 (HH:MM, KST)
     # Pre-market data sync time (HH:MM, KST)
@@ -419,8 +419,6 @@ def validate() -> list[str]:
         warnings.append("MARKET_RISK.nasdaq_severe_drop_pct must be <= nasdaq_moderate_drop_pct.")
     if REBALANCE.sell_rank_buffer < PORTFOLIO.n_holdings:
         warnings.append("REBALANCE.sell_rank_buffer must be >= PORTFOLIO.n_holdings.")
-    if REBALANCE.min_holding_trading_days < 0:
-        warnings.append("REBALANCE.min_holding_trading_days must be zero or greater.")
     return warnings
 
 
