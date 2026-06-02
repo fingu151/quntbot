@@ -248,7 +248,7 @@ def test_upsert_telegram_signals_saves_and_updates_rows():
     assert latest == {"005930": 2.0}
 
 
-def test_replace_telegram_signals_for_date_keeps_existing_rows_when_empty():
+def test_replace_telegram_signals_for_date_clears_existing_rows_when_empty():
     engine = get_engine("sqlite:///:memory:")
     create_tables(engine)
 
@@ -271,7 +271,31 @@ def test_replace_telegram_signals_for_date_keeps_existing_rows_when_empty():
         latest = get_latest_telegram_signals(session, date(2026, 5, 11))
 
     assert replaced == 0
-    assert latest == {"005930": 3.0}
+    assert latest == {}
+
+
+def test_get_latest_telegram_signals_does_not_carry_to_later_dates():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+
+    with session_scope(engine) as session:
+        upsert_telegram_signals(
+            session,
+            [
+                {
+                    "message_date": date(2026, 5, 11),
+                    "ticker": "005930",
+                    "signal_type": "positive",
+                    "star_rating": 3,
+                    "raw_score": 3.0,
+                    "target_price": 90000.0,
+                    "message_id": 100,
+                }
+            ],
+        )
+        later = get_latest_telegram_signals(session, date(2026, 5, 12))
+
+    assert later == {}
 
 
 def test_replace_busanstock_signals_for_date_saves_and_replaces_rows():

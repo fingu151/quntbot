@@ -320,7 +320,7 @@ REBALANCE = RebalanceConfig()
 class SafetyConfig:
     # 일일 매매 횟수 한도
     max_daily_buys: int = 20
-    max_daily_sells: int = 10
+    max_daily_sells: int = 30
 
     # 일일 손실 한도 도달 시 신규 매수 중단. 위험 축소용 매도는 계속 허용한다.
     daily_loss_limit_pct: float = -0.03  # -3%

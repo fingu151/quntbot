@@ -137,14 +137,46 @@ class KisClient:
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        resp = self._session.get(
-            url,
-            headers=self._headers("VTTC8434R"),
-            params=params,
-            timeout=self._config.request_timeout_sec,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        merged: dict[str, Any] | None = None
+        output1: list[dict[str, Any]] = []
+
+        for page in range(20):
+            for attempt in range(3):
+                resp = self._session.get(
+                    url,
+                    headers=self._headers("VTTC8434R"),
+                    params=params,
+                    timeout=self._config.request_timeout_sec,
+                )
+                if resp.status_code != 500:
+                    break
+                try:
+                    message = str(resp.json().get("msg1") or "")
+                except (TypeError, ValueError):
+                    message = ""
+                if "초당" not in message or attempt == 2:
+                    break
+                time.sleep(0.7 * (attempt + 1))
+            resp.raise_for_status()
+            data = resp.json()
+            if merged is None:
+                merged = dict(data)
+            output1.extend(data.get("output1") or [])
+            if data.get("output2"):
+                merged["output2"] = data.get("output2")
+
+            next_fk_raw = str(data.get("ctx_area_fk100") or "")
+            next_nk_raw = str(data.get("ctx_area_nk100") or "")
+            if data.get("rt_cd") != "0" or not (next_fk_raw.strip() or next_nk_raw.strip()):
+                break
+            params["CTX_AREA_FK100"] = next_fk_raw
+            params["CTX_AREA_NK100"] = next_nk_raw
+            if page < 19:
+                time.sleep(0.7)
+
+        result = merged or {}
+        result["output1"] = output1
+        return result
 
     def get_holdings(self) -> list[dict[str, Any]]:
         """보유 종목 목록 조회.

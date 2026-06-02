@@ -198,6 +198,36 @@ def test_sync_phase1_data_does_not_deactivate_existing_stocks_when_universe_is_e
     assert sync_run.error_message == "no universe rows collected"
 
 
+def test_sync_phase1_data_fails_before_deactivating_when_active_market_is_missing():
+    class KosdaqOnlyProvider(FakeProvider):
+        def get_universe(self):
+            return [{"ticker": "091990", "name": "Celltrion Healthcare", "market": "KOSDAQ"}]
+
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        session.add(Stock(ticker="005930", name="Samsung", market="KOSPI", is_active=True))
+
+    with pytest.raises(RuntimeError, match="missing active market rows for KOSPI"):
+        sync_phase1_data(
+            engine=engine,
+            provider=KosdaqOnlyProvider(),
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 2),
+        )
+
+    with session_scope(engine) as session:
+        samsung = session.get(Stock, "005930")
+        kosdaq = session.get(Stock, "091990")
+        sync_run = session.scalars(select(SyncRun)).one()
+
+    assert samsung is not None
+    assert samsung.is_active is True
+    assert kosdaq is None
+    assert sync_run.status == "failed"
+    assert sync_run.error_message == "partial universe rows collected: missing active market rows for KOSPI"
+
+
 def _make_fake_universe(*, use_kospi=True, use_kosdaq=False, kospi_top_n=10,
                         kosdaq_top_n=10, lookback_days=1, min_value=0,
                         exclude_preferred=True, exclude_managed=False,

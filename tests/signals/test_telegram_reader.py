@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from src.data.database import create_tables, get_engine, session_scope
 from src.data.repositories import get_latest_telegram_signals, upsert_stocks, upsert_telegram_signals
 from src.signals import telegram_reader
+from src.signals.telegram_parser import ParsedMessage
 
 
 _MESSAGE = """
@@ -137,3 +138,50 @@ def test_fetch_and_store_signals_replaces_stale_rows_for_same_date(monkeypatch):
 
     assert stored == 1
     assert latest == {"005930": -1.0}
+
+
+def test_fetch_and_store_signals_clears_same_day_rows_when_brief_has_no_signals(monkeypatch):
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_telegram_signals(
+            session,
+            [
+                {
+                    "message_date": date(2026, 5, 9),
+                    "ticker": "005930",
+                    "signal_type": "positive",
+                    "star_rating": 3,
+                    "raw_score": 3.0,
+                    "target_price": None,
+                    "message_id": 1,
+                }
+            ],
+        )
+
+    async def fake_fetch_messages(limit):
+        return [(99, "brief")]
+
+    monkeypatch.setattr(
+        telegram_reader,
+        "TELEGRAM_SIGNAL",
+        SimpleNamespace(enabled=True, fetch_limit=3),
+    )
+    monkeypatch.setattr(telegram_reader, "_fetch_messages", fake_fetch_messages)
+    monkeypatch.setattr(
+        telegram_reader,
+        "parse_morning_brief",
+        lambda text, message_id, ticker_by_name: ParsedMessage(
+            message_date=date(2026, 5, 9),
+            signals=[],
+            message_id=message_id,
+        ),
+    )
+
+    stored = telegram_reader.fetch_and_store_signals(engine, as_of_date=date(2026, 5, 9))
+
+    with session_scope(engine) as session:
+        latest = get_latest_telegram_signals(session, date(2026, 5, 9))
+
+    assert stored == 0
+    assert latest == {}

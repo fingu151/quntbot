@@ -113,6 +113,50 @@ def _get_previous_closes(
     return previous_closes
 
 
+def _load_daily_price_atr(
+    db_engine: object,
+    ticker: str,
+    *,
+    as_of_date: date,
+    window: int,
+) -> float | None:
+    if window <= 0:
+        return None
+    with session_scope(db_engine) as session:
+        rows = list(
+            session.scalars(
+                select(DailyPrice)
+                .where(
+                    DailyPrice.ticker == ticker,
+                    DailyPrice.date <= as_of_date,
+                    DailyPrice.high.is_not(None),
+                    DailyPrice.low.is_not(None),
+                    DailyPrice.close.is_not(None),
+                )
+                .order_by(DailyPrice.date.desc())
+                .limit(window + 1)
+            ).all()
+        )
+    rows.reverse()
+    if len(rows) <= window:
+        return None
+
+    true_ranges: list[float] = []
+    for previous, current in zip(rows[-window - 1 :], rows[-window:]):
+        if previous.close is None or current.high is None or current.low is None:
+            return None
+        true_ranges.append(
+            max(
+                float(current.high) - float(current.low),
+                abs(float(current.high) - float(previous.close)),
+                abs(float(current.low) - float(previous.close)),
+            )
+        )
+    if len(true_ranges) < window:
+        return None
+    return sum(true_ranges) / window
+
+
 def _rebalance_job(
     engine: TradingEngine,
     db_engine: object,
@@ -257,6 +301,7 @@ def _rebalance_job(
             preflight_report_path=preflight_report_path,
             expected_preflight_date=run_date,
             allow_buys=not risk_off_sell_only,
+            enforce_preflight_order_match=True,
         )
 
         logger.info(f"Engine status: {engine.status}")
@@ -351,7 +396,15 @@ def run_scheduler() -> None:
     create_tables(db_engine)
 
     client = KisClient()
-    engine = TradingEngine(client)
+    engine = TradingEngine(
+        client,
+        atr_lookup=lambda ticker, as_of_date, window: _load_daily_price_atr(
+            db_engine,
+            ticker,
+            as_of_date=as_of_date,
+            window=window,
+        ),
+    )
     sync_state = PreMarketSyncState()
 
     scheduler = BlockingScheduler(timezone="Asia/Seoul")

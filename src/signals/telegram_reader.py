@@ -70,6 +70,8 @@ def fetch_and_store_signals(engine: Engine, as_of_date: date | None = None) -> i
     brief = parsed_today[0]
     if not brief.signals:
         logger.debug(f"Morning brief for {today} parsed but contained no ticker signals")
+        with session_scope(engine) as session:
+            replace_telegram_signals_for_date(session, brief.message_date, [])
         return 0
 
     rows = [

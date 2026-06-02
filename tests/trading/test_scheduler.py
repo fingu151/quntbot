@@ -1,6 +1,8 @@
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.data.database import create_tables, get_engine, session_scope
 from src.data.repositories import upsert_daily_prices, upsert_market_index_prices
 from src.factors.models import FactorScore
@@ -123,6 +125,7 @@ def test_rebalance_job_passes_dry_run_preflight_report_to_executor():
         scheduler.REBALANCE.dry_run_preflight_report_path
     )
     assert execute.call_args.kwargs["expected_preflight_date"] == date(2026, 5, 6)
+    assert execute.call_args.kwargs["enforce_preflight_order_match"] is True
 
 
 def test_rebalance_job_passes_previous_closes_to_rebalancer():
@@ -608,6 +611,55 @@ def test_stop_loss_job_runs_exit_monitor_when_daily_loss_check_fails():
 
     engine.check_daily_loss_limit.assert_called_once()
     engine.check_exit_rules.assert_called_once()
+
+
+def test_load_daily_price_atr_uses_true_range(tmp_path):
+    db_engine = get_engine(f"sqlite:///{tmp_path / 'atr.db'}")
+    scheduler.create_tables(db_engine)
+    rows = []
+    for day, high, low, close in [
+        (1, 105, 95, 100),
+        (2, 112, 101, 110),
+        (3, 118, 106, 108),
+        (4, 115, 100, 102),
+    ]:
+        rows.append({
+            "ticker": "005930",
+            "date": date(2026, 5, day),
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": 1,
+        })
+    with session_scope(db_engine) as session:
+        upsert_daily_prices(session, rows)
+
+    atr = scheduler._load_daily_price_atr(
+        db_engine,
+        "005930",
+        as_of_date=date(2026, 5, 4),
+        window=3,
+    )
+
+    assert atr == pytest.approx((12 + 12 + 15) / 3)
+
+
+def test_run_scheduler_injects_atr_lookup_into_trading_engine():
+    fake_scheduler = MagicMock()
+    fake_scheduler.start.side_effect = KeyboardInterrupt
+    engine_ctor = MagicMock(return_value=MagicMock())
+
+    with (
+        patch.object(scheduler, "BlockingScheduler", return_value=fake_scheduler),
+        patch.object(scheduler, "get_engine", return_value="db-engine"),
+        patch.object(scheduler, "create_tables"),
+        patch.object(scheduler, "KisClient"),
+        patch.object(scheduler, "TradingEngine", engine_ctor),
+    ):
+        scheduler.run_scheduler()
+
+    assert engine_ctor.call_args.kwargs["atr_lookup"] is not None
 
 
 def test_run_scheduler_uses_research_report_poll_window():

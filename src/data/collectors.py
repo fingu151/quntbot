@@ -9,10 +9,11 @@ import pandas as pd
 import requests
 from loguru import logger
 from sqlalchemy import Engine
+from sqlalchemy import func, select
 
 from config import UNIVERSE
 from src.data.database import session_scope
-from src.data.models import SyncRun, utc_now
+from src.data.models import Stock, SyncRun, utc_now
 from src.data.repositories import (
     deactivate_stocks_not_in,
     upsert_daily_prices,
@@ -293,6 +294,7 @@ def sync_phase1_data(
             universe = provider.get_universe()
             if not universe:
                 raise RuntimeError("no universe rows collected")
+            _validate_universe_markets_before_deactivation(session, universe)
             universe_count = upsert_stocks(session, universe)
             deactivate_stocks_not_in(session, [row["ticker"] for row in universe])
 
@@ -333,6 +335,34 @@ def sync_phase1_data(
     if result is None:
         raise RuntimeError("sync finished without a result")
     return result
+
+
+def _validate_universe_markets_before_deactivation(session: Any, universe: list[dict[str, Any]]) -> None:
+    collected_markets = {str(row.get("market") or "").upper() for row in universe}
+    expected_markets = []
+    if getattr(UNIVERSE, "use_kospi", False):
+        expected_markets.append("KOSPI")
+    if getattr(UNIVERSE, "use_kosdaq", False):
+        expected_markets.append("KOSDAQ")
+
+    missing_existing_markets = []
+    for market in expected_markets:
+        if market in collected_markets:
+            continue
+        existing_count = session.scalar(
+            select(func.count()).select_from(Stock).where(
+                Stock.is_active.is_(True),
+                Stock.market == market,
+            )
+        ) or 0
+        if int(existing_count) > 0:
+            missing_existing_markets.append(market)
+
+    if missing_existing_markets:
+        missing = ", ".join(missing_existing_markets)
+        raise RuntimeError(
+            f"partial universe rows collected: missing active market rows for {missing}"
+        )
 
 
 def _fetch_market_data_parallel(

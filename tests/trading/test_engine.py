@@ -18,7 +18,8 @@ from src.trading.exit_state import ExitStateStore
 def _make_engine(max_buys: int = 3, max_sells: int = 3,
                  daily_loss_limit: float = -0.03,
                  stop_loss_pct: float = -0.08,
-                 daily_anchor_path: Path | None = None) -> TradingEngine:
+                 daily_anchor_path: Path | None = None,
+                 atr_lookup=None) -> TradingEngine:
     mock_client = MagicMock()
     mock_client.place_order.return_value = {"rt_cd": "0", "msg1": "주문접수"}
 
@@ -36,6 +37,7 @@ def _make_engine(max_buys: int = 3, max_sells: int = 3,
         safety=safety,
         exit_rules=exit_rules,
         daily_anchor_path=daily_anchor_path,
+        atr_lookup=atr_lookup,
     )
     return engine
 
@@ -77,6 +79,51 @@ def test_sell_raises_when_daily_limit_reached():
         engine.sell("005930", qty=1)
 
 
+def test_check_stop_loss_bypasses_daily_sell_limit():
+    engine = _make_engine(max_sells=1, stop_loss_pct=-0.05)
+    engine._daily_sells = 1
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 5,
+            "avg_price": 100_000,
+            "current_price": 94_000,
+        }
+    ]
+
+    triggered = engine.check_stop_loss()
+
+    assert triggered == ["005930"]
+    assert engine._daily_sells == 2
+    engine._client.place_order.assert_called_once_with(
+        "005930", qty=5, price=0, side="SELL"
+    )
+
+
+def test_check_exit_rules_full_stop_bypasses_daily_sell_limit(tmp_path):
+    engine = _make_engine(max_sells=1, stop_loss_pct=-0.05)
+    engine._daily_sells = 1
+    engine._exit_state_store = ExitStateStore(tmp_path / "exit_state.json")
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 5,
+            "avg_price": 100_000,
+            "current_price": 94_000,
+        }
+    ]
+
+    triggered = engine.check_exit_rules()
+
+    assert triggered == ["005930"]
+    assert engine._daily_sells == 2
+    engine._client.place_order.assert_called_once_with(
+        "005930", qty=5, price=0, side="SELL"
+    )
+
+
 def test_counter_resets_on_new_day():
     """날짜가 바뀌면 일일 카운터와 halted 상태가 초기화된다."""
     engine = _make_engine(max_buys=1)
@@ -96,9 +143,12 @@ def test_counter_resets_on_new_day():
 # 일일 손실 한도 테스트
 # ------------------------------------------------------------------
 
-def test_check_daily_loss_first_check_sets_baseline_without_halt():
+def test_check_daily_loss_first_check_sets_baseline_without_halt(tmp_path):
     """첫 손실 한도 체크는 당일 기준자산만 저장하고 중단하지 않는다."""
-    engine = _make_engine(daily_loss_limit=-0.03)
+    engine = _make_engine(
+        daily_loss_limit=-0.03,
+        daily_anchor_path=tmp_path / "daily_anchor.json",
+    )
     engine._client.get_balance.return_value = {
         "rt_cd": "0",
         "output2": [{"tot_evlu_amt": "95000000", "pchs_amt_smtl_amt": "100000000"}],
@@ -263,6 +313,31 @@ def test_check_exit_rules_full_stops_before_profit_take(tmp_path):
             "qty": 10,
             "avg_price": 100_000,
             "current_price": 94_000,
+        }
+    ]
+
+    triggered = engine.check_exit_rules()
+
+    assert triggered == ["005930"]
+    engine._client.place_order.assert_called_once_with(
+        "005930", qty=10, price=0, side="SELL"
+    )
+    assert "005930" not in engine._exit_state_store.load()
+
+
+def test_check_exit_rules_atr_stop_sells_before_static_stop(tmp_path):
+    engine = _make_engine(
+        stop_loss_pct=-0.10,
+        atr_lookup=lambda ticker, as_of_date, window: 4_000.0,
+    )
+    engine._exit_state_store = ExitStateStore(tmp_path / "exit_state.json")
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 10,
+            "avg_price": 100_000,
+            "current_price": 91_000,
         }
     ]
 
@@ -456,7 +531,13 @@ def test_check_exit_rules_trailing_bucket_sells_after_profit_take(tmp_path):
         triggered = engine.check_exit_rules()
 
     assert triggered == ["005930"]
-    sell_mock.assert_called_once_with("005930", qty=3, price=0, name="Samsung")
+    sell_mock.assert_called_once_with(
+        "005930",
+        qty=3,
+        price=0,
+        name="Samsung",
+        enforce_daily_limit=False,
+    )
 
 
 def test_check_exit_rules_breakeven_bucket_sells_after_profit_take(tmp_path):
@@ -495,7 +576,13 @@ def test_check_exit_rules_breakeven_bucket_sells_after_profit_take(tmp_path):
         triggered = engine.check_exit_rules()
 
     assert triggered == ["005930"]
-    sell_mock.assert_called_once_with("005930", qty=4, price=0, name="Samsung")
+    sell_mock.assert_called_once_with(
+        "005930",
+        qty=4,
+        price=0,
+        name="Samsung",
+        enforce_daily_limit=False,
+    )
 
 
 def test_check_exit_rules_removes_state_after_all_staged_buckets_sell(tmp_path):
@@ -536,8 +623,8 @@ def test_check_exit_rules_removes_state_after_all_staged_buckets_sell(tmp_path):
     assert triggered == ["005930"]
     sell_mock.assert_has_calls(
         [
-            call("005930", qty=3, price=0, name="Samsung"),
-            call("005930", qty=4, price=0, name="Samsung"),
+            call("005930", qty=3, price=0, name="Samsung", enforce_daily_limit=False),
+            call("005930", qty=4, price=0, name="Samsung", enforce_daily_limit=False),
         ]
     )
     assert "005930" not in engine._exit_state_store.load()

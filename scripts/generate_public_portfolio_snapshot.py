@@ -7,8 +7,10 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+import requests
 from sqlalchemy import desc, select
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -23,6 +25,8 @@ from src.factors.engine import calculate_factor_scores
 
 KST = ZoneInfo("Asia/Seoul")
 SnapshotHoldingProvider = Callable[[], list[dict[str, Any]]]
+SnapshotAccountProvider = Callable[[], dict[str, Any]]
+MarketSnapshotProvider = Callable[[], dict[str, Any]]
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -62,11 +66,18 @@ def run(
     args: argparse.Namespace,
     *,
     holdings_provider: SnapshotHoldingProvider | None = None,
+    account_provider: SnapshotAccountProvider | None = None,
+    market_provider: MarketSnapshotProvider | None = None,
 ) -> int:
-    provider = holdings_provider or _load_kis_holdings
+    provider = holdings_provider
+    account: dict[str, Any] = {}
     fallback_warning = ""
     try:
-        holdings = provider()
+        if provider is not None:
+            holdings = provider()
+        else:
+            account = (account_provider or _load_kis_account_snapshot)()
+            holdings = list(account.get("holdings") or [])
         holdings_source = "kis_paper"
         kis_called_by_snapshot = True
     except Exception as exc:
@@ -78,6 +89,7 @@ def run(
         holdings_source = "previous_public_snapshot"
         kis_called_by_snapshot = False
         fallback_warning = f"kis_holdings_unavailable_reused_previous_snapshot:{type(exc).__name__}"
+        account = _account_from_existing_snapshot(args.output)
     tickers = [str(row.get("ticker", "")) for row in holdings if row.get("ticker")]
     dry_run = load_json_file(args.dry_run_json)
     execution_path = args.execution_report_json or find_latest_execution_report(DATA_DIR)
@@ -86,11 +98,22 @@ def run(
     signal_details = load_signal_details(args.database_url, tickers, signal_date)
     market_context = load_market_context(args.database_url, tickers, signal_date)
     factor_details = load_factor_details(args.database_url, tickers, signal_date)
+    try:
+        market = (market_provider or fetch_live_market_snapshot)()
+    except Exception as exc:
+        market = _market_from_existing_snapshot(args.output)
+        fallback_warning = (
+            f"{fallback_warning};market_unavailable_reused_previous_snapshot:{type(exc).__name__}"
+            if fallback_warning
+            else f"market_unavailable_reused_previous_snapshot:{type(exc).__name__}"
+        )
 
     snapshot = build_snapshot(
         holdings,
         dry_run=dry_run,
         execution=execution,
+        account=account,
+        market=market,
         signal_details=signal_details,
         market_context=market_context,
         factor_details=factor_details,
@@ -115,6 +138,8 @@ def build_snapshot(
     *,
     dry_run: dict[str, Any] | None = None,
     execution: dict[str, Any] | None = None,
+    account: dict[str, Any] | None = None,
+    market: dict[str, Any] | None = None,
     signal_details: dict[str, list[dict[str, Any]]] | None = None,
     market_context: dict[str, dict[str, Any]] | None = None,
     factor_details: dict[str, dict[str, float]] | None = None,
@@ -123,6 +148,7 @@ def build_snapshot(
     current_time = (generated_at or datetime.now(KST)).astimezone(KST)
     dry_run_payload = dry_run or {}
     execution_payload = execution or {}
+    account_payload = account or {}
     signal_map = signal_details or {}
     context_map = market_context or {}
     factor_map = factor_details or {}
@@ -182,6 +208,12 @@ def build_snapshot(
         )
 
     total_profit_loss_rate = (total_profit_loss / total_cost) * 100 if total_cost else 0.0
+    cash = _cash_summary(account_payload)
+    realized = _realized_summary(account_payload, execution_payload)
+    cash_balance = _to_int(cash.get("available"))
+    total_asset_value = _to_int(account_payload.get("total_asset_value"))
+    if total_asset_value <= 0:
+        total_asset_value = total_market_value + cash_balance
     return {
         "schema_version": 1,
         "generated_at": current_time.isoformat(),
@@ -194,10 +226,17 @@ def build_snapshot(
         "summary": {
             "holding_count": len(positions),
             "total_market_value": total_market_value,
+            "stock_market_value": total_market_value,
+            "cash_balance": cash_balance,
+            "total_asset_value": total_asset_value,
             "total_cost": total_cost,
             "total_profit_loss": total_profit_loss,
             "total_profit_loss_rate": round(total_profit_loss_rate, 2),
+            "realized_profit_loss": _to_int(realized.get("profit_loss")),
         },
+        "cash": cash,
+        "realized": realized,
+        "market": market or _empty_market(current_time),
         "positions": positions,
         "warnings": warnings,
     }
@@ -227,6 +266,179 @@ def _load_holdings_from_existing_snapshot(path: Path) -> list[dict[str, Any]]:
             }
         )
     return holdings
+
+
+def _account_from_existing_snapshot(path: Path) -> dict[str, Any]:
+    snapshot = load_json_file(path)
+    return {
+        "cash": snapshot.get("cash") or {},
+        "realized": snapshot.get("realized") or {},
+        "total_asset_value": (snapshot.get("summary") or {}).get("total_asset_value"),
+    }
+
+
+def _market_from_existing_snapshot(path: Path) -> dict[str, Any]:
+    snapshot = load_json_file(path)
+    market = snapshot.get("market") or {}
+    return market if isinstance(market, dict) else {}
+
+
+def _load_kis_account_snapshot() -> dict[str, Any]:
+    from src.trading.kis_client import KisClient
+
+    raw = KisClient().get_balance()
+    return _account_snapshot_from_kis_balance(raw)
+
+
+def _account_snapshot_from_kis_balance(raw: dict[str, Any]) -> dict[str, Any]:
+    output2 = (raw.get("output2") or [{}])[0] or {}
+    holdings = []
+    for item in raw.get("output1") or []:
+        qty = _to_int(item.get("hldg_qty"))
+        if qty <= 0:
+            continue
+        holdings.append(
+            {
+                "ticker": item.get("pdno", ""),
+                "name": item.get("prdt_name", ""),
+                "qty": qty,
+                "avg_price": _to_int(item.get("pchs_avg_pric")),
+                "current_price": _to_int(item.get("prpr")),
+                "eval_profit_loss": _to_int(item.get("evlu_pfls_amt")),
+                "profit_loss_rate": _to_float(item.get("evlu_pfls_rt")),
+            }
+        )
+    securities_value = _first_int(output2, "scts_evlu_amt", "evlu_amt_smtl_amt")
+    total_asset_value = _first_int(output2, "tot_evlu_amt", "nass_amt")
+    derived_cash = max(0, total_asset_value - securities_value) if total_asset_value and securities_value else 0
+    cash_available = _first_int(output2, "prvs_rcdl_excc_amt", "ord_psbl_cash")
+    if cash_available <= 0:
+        cash_available = derived_cash
+    if cash_available <= 0:
+        cash_available = _first_int(output2, "nxdy_excc_amt", "dnca_tot_amt")
+    withdrawable = _first_int(output2, "nxdy_excc_amt", "dnca_tot_amt")
+    realized_profit_loss = _first_int(
+        output2,
+        "rlzt_pfls",
+        "rlzt_pfls_amt",
+    )
+    return {
+        "holdings": holdings,
+        "cash": {
+            "available": cash_available,
+            "withdrawable": withdrawable,
+            "deposit_total": _first_int(output2, "dnca_tot_amt"),
+            "derived_from_total_asset": derived_cash,
+            "source": "kis_balance",
+        },
+        "realized": {
+            "profit_loss": realized_profit_loss,
+            "source": "kis_balance" if realized_profit_loss else "unavailable",
+        },
+        "total_asset_value": total_asset_value,
+        "raw_output2_keys": sorted(str(key) for key in output2.keys()),
+    }
+
+
+def fetch_live_market_snapshot(
+    *,
+    fetcher: Callable[[str], dict[str, Any]] | None = None,
+    generated_at: datetime | None = None,
+) -> dict[str, Any]:
+    now = (generated_at or datetime.now(KST)).astimezone(KST)
+    fetch = fetcher or _fetch_yahoo_chart
+    symbol_map = {
+        "kospi": "KS11",
+        "kosdaq": "KQ11",
+        "usdkrw": "KRW=X",
+    }
+    market: dict[str, Any] = {
+        "generated_at": now.isoformat(),
+        "source": "yahoo_chart",
+        "status": _market_status(now),
+        "session_label": "정규장" if _market_status(now) == "OPEN" else "정규장 마감",
+    }
+    warnings: list[str] = []
+    for key, symbol in symbol_map.items():
+        try:
+            market[key] = _parse_yahoo_chart_quote(fetch(symbol))
+        except Exception as exc:
+            warnings.append(f"{key}:{type(exc).__name__}")
+    if warnings:
+        market["warnings"] = warnings
+    return market
+
+
+def _fetch_yahoo_chart(symbol: str) -> dict[str, Any]:
+    yahoo_symbol = {"KS11": "^KS11", "KQ11": "^KQ11"}.get(symbol, symbol)
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(yahoo_symbol, safe='')}?range=5d&interval=1d"
+    response = requests.get(
+        url,
+        timeout=10,
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _parse_yahoo_chart_quote(payload: dict[str, Any]) -> dict[str, float]:
+    result = ((payload.get("chart") or {}).get("result") or [{}])[0] or {}
+    meta = result.get("meta") or {}
+    value = _to_float(meta.get("regularMarketPrice") or meta.get("previousClose"))
+    previous = _to_float(meta.get("chartPreviousClose") or meta.get("previousClose"))
+    if previous <= 0:
+        indicators = ((result.get("indicators") or {}).get("quote") or [{}])[0] or {}
+        closes = [float(item) for item in indicators.get("close", []) if item not in (None, "")]
+        if len(closes) >= 2:
+            previous = closes[-2]
+        if closes and value <= 0:
+            value = closes[-1]
+    chg_pct = ((value - previous) / previous * 100) if previous else 0.0
+    return {"value": round(value, 4), "chg_pct": round(chg_pct, 4)}
+
+
+def _market_status(now: datetime) -> str:
+    local = now.astimezone(KST)
+    minutes = local.hour * 60 + local.minute
+    return "OPEN" if local.weekday() < 5 and 9 * 60 <= minutes <= 15 * 60 + 30 else "CLOSED"
+
+
+def _empty_market(now: datetime) -> dict[str, Any]:
+    return {
+        "generated_at": now.isoformat(),
+        "source": "unavailable",
+        "status": _market_status(now),
+        "session_label": "정규장" if _market_status(now) == "OPEN" else "정규장 마감",
+    }
+
+
+def _cash_summary(account: dict[str, Any]) -> dict[str, Any]:
+    cash = account.get("cash") or {}
+    return {
+        "available": _to_int(cash.get("available")),
+        "withdrawable": _to_int(cash.get("withdrawable")),
+        "deposit_total": _to_int(cash.get("deposit_total")),
+        "derived_from_total_asset": _to_int(cash.get("derived_from_total_asset")),
+        "source": str(cash.get("source") or "unavailable"),
+    }
+
+
+def _realized_summary(account: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
+    realized = account.get("realized") or {}
+    profit_loss = _to_int(realized.get("profit_loss"))
+    return {
+        "profit_loss": profit_loss,
+        "source": str(realized.get("source") or "unavailable"),
+        "latest_execution_sold_count": int(_to_int(execution.get("sold_count"))),
+    }
+
+
+def _first_int(row: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return _to_int(value)
+    return 0
 
 
 def find_latest_execution_report(data_dir: Path) -> Path | None:

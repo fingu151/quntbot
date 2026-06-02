@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ from config import DATA_DIR, EXIT_RULES, SAFETY, ExitRulesConfig, SafetyConfig
 from src.notify.notifier import TelegramNotifier
 from src.trading.exit_state import ExitStateStore
 from src.trading.kis_client import KisClient
+
+AtrLookup = Callable[[str, date, int], float | None]
 
 
 class TradingEngine:
@@ -30,6 +33,7 @@ class TradingEngine:
         notifier: TelegramNotifier | None = None,
         daily_anchor_path: Path | None = None,
         exit_state_path: Path | None = None,
+        atr_lookup: AtrLookup | None = None,
     ) -> None:
         self._client = client
         self._safety = safety
@@ -45,6 +49,7 @@ class TradingEngine:
         self._exit_state_store = ExitStateStore(
             exit_state_path or (DATA_DIR / "exit_state.json")
         )
+        self._atr_lookup = atr_lookup
         self._peak_prices: dict[str, float] = {}  # {ticker: 보유 후 최고가}
 
     # ------------------------------------------------------------------
@@ -123,7 +128,15 @@ class TradingEngine:
             self._notifier.notify_order("BUY", ticker, name or ticker, qty, price, order_no)
         return result
 
-    def sell(self, ticker: str, qty: int, price: int = 0, name: str = "") -> dict[str, Any]:
+    def sell(
+        self,
+        ticker: str,
+        qty: int,
+        price: int = 0,
+        name: str = "",
+        *,
+        enforce_daily_limit: bool = True,
+    ) -> dict[str, Any]:
         """매도 주문. 일일 매도 한도 초과 시 RuntimeError.
 
         Args:
@@ -134,7 +147,7 @@ class TradingEngine:
         """
         self._reset_if_new_day()
 
-        if self._daily_sells >= self._safety.max_daily_sells:
+        if enforce_daily_limit and self._daily_sells >= self._safety.max_daily_sells:
             raise RuntimeError(
                 f"일일 매도 한도 초과: {self._daily_sells}/{self._safety.max_daily_sells}"
             )
@@ -142,7 +155,12 @@ class TradingEngine:
         result = self._client.place_order(ticker, qty=qty, price=price, side="SELL")
         if result.get("rt_cd") == "0":
             self._daily_sells += 1
-            logger.info(f"[엔진] 매도 접수 완료 ({self._daily_sells}/{self._safety.max_daily_sells})")
+            limit_note = (
+                f"{self._daily_sells}/{self._safety.max_daily_sells}"
+                if enforce_daily_limit
+                else f"{self._daily_sells}/{self._safety.max_daily_sells}, risk exit"
+            )
+            logger.info(f"[엔진] 매도 접수 완료 ({limit_note})")
             order_no = result.get("output", {}).get("ODNO", "")
             self._notifier.notify_order("SELL", ticker, name or ticker, qty, price, order_no)
         return result
@@ -181,7 +199,13 @@ class TradingEngine:
                 self._notifier.notify_stop_loss(
                     h["ticker"], h["name"], h["qty"], pnl_rate
                 )
-                result = self.sell(h["ticker"], qty=h["qty"], price=0, name=h["name"])
+                result = self.sell(
+                    h["ticker"],
+                    qty=h["qty"],
+                    price=0,
+                    name=h["name"],
+                    enforce_daily_limit=False,
+                )
                 if result.get("rt_cd") == "0":
                     triggered.append(h["ticker"])
 
@@ -229,7 +253,13 @@ class TradingEngine:
                     f"시장가 매도 실행."
                 )
                 self._notifier.notify_stop_loss(ticker, h["name"], h["qty"], trail_rate)
-                result = self.sell(ticker, qty=h["qty"], price=0, name=h["name"])
+                result = self.sell(
+                    ticker,
+                    qty=h["qty"],
+                    price=0,
+                    name=h["name"],
+                    enforce_daily_limit=False,
+                )
                 if result.get("rt_cd") == "0":
                     triggered.append(ticker)
                     del self._peak_prices[ticker]
@@ -278,13 +308,44 @@ class TradingEngine:
             )
             pnl_rate = (current / avg) - 1.0
 
+            atr = self._get_atr(ticker) if not state.profit_take_done else None
+            atr_stop_price = (
+                avg - (atr * self._exit_rules.atr_multiplier)
+                if atr is not None and self._exit_rules.enable_atr_stop
+                else None
+            )
+            if atr_stop_price is not None and current <= atr_stop_price:
+                logger.warning(
+                    f"[Exit ATR stop] {name}({ticker}) current={current:,.0f}, "
+                    f"atr_stop={atr_stop_price:,.0f}, atr={atr:,.0f}, "
+                    f"multiplier={self._exit_rules.atr_multiplier:.2f}. Selling full position."
+                )
+                self._notifier.notify_stop_loss(ticker, name, qty, pnl_rate)
+                result = self.sell(
+                    ticker,
+                    qty=qty,
+                    price=0,
+                    name=name,
+                    enforce_daily_limit=False,
+                )
+                if result.get("rt_cd") == "0":
+                    self._exit_state_store.delete(ticker)
+                    triggered.append(ticker)
+                continue
+
             if pnl_rate <= self._exit_rules.stop_loss_pct:
                 logger.warning(
                     f"[Exit full stop] {name}({ticker}) pnl={pnl_rate:.2%}, "
                     f"threshold={self._exit_rules.stop_loss_pct:.2%}. Selling full position."
                 )
                 self._notifier.notify_stop_loss(ticker, name, qty, pnl_rate)
-                result = self.sell(ticker, qty=qty, price=0, name=name)
+                result = self.sell(
+                    ticker,
+                    qty=qty,
+                    price=0,
+                    name=name,
+                    enforce_daily_limit=False,
+                )
                 if result.get("rt_cd") == "0":
                     self._exit_state_store.delete(ticker)
                     triggered.append(ticker)
@@ -301,7 +362,13 @@ class TradingEngine:
                     f"[Exit profit take] {name}({ticker}) pnl={pnl_rate:.2%}, "
                     f"threshold={self._exit_rules.profit_take_pct:.2%}. Selling {sell_qty}."
                 )
-                result = self.sell(ticker, qty=sell_qty, price=0, name=name)
+                result = self.sell(
+                    ticker,
+                    qty=sell_qty,
+                    price=0,
+                    name=name,
+                    enforce_daily_limit=False,
+                )
                 if result.get("rt_cd") == "0":
                     remaining_qty = max(qty - sell_qty, 0)
                     state.profit_take_done = True
@@ -331,7 +398,11 @@ class TradingEngine:
                         ticker, name, state.trailing_qty, trail_rate
                     )
                     result = self.sell(
-                        ticker, qty=state.trailing_qty, price=0, name=name
+                        ticker,
+                        qty=state.trailing_qty,
+                        price=0,
+                        name=name,
+                        enforce_daily_limit=False,
                     )
                     if result.get("rt_cd") == "0":
                         state.trailing_qty = 0
@@ -348,7 +419,13 @@ class TradingEngine:
                     f"current={current:,.0f}, breakeven={breakeven_price:,.0f}. "
                     f"Selling {state.breakeven_qty}."
                 )
-                result = self.sell(ticker, qty=state.breakeven_qty, price=0, name=name)
+                result = self.sell(
+                    ticker,
+                    qty=state.breakeven_qty,
+                    price=0,
+                    name=name,
+                    enforce_daily_limit=False,
+                )
                 if result.get("rt_cd") == "0":
                     state.breakeven_qty = 0
                     if state.trailing_qty <= 0:
@@ -359,6 +436,18 @@ class TradingEngine:
                         triggered.append(ticker)
 
         return triggered
+
+    def _get_atr(self, ticker: str) -> float | None:
+        if self._atr_lookup is None:
+            return None
+        try:
+            atr = self._atr_lookup(ticker, self._today, self._exit_rules.atr_window)
+        except Exception as exc:
+            logger.warning(f"ATR lookup failed: ticker={ticker}, error={exc}")
+            return None
+        if atr is None or atr <= 0:
+            return None
+        return float(atr)
 
     def check_daily_loss_limit(self) -> bool:
         """당일 계좌 수익률이 손실 한도를 초과했는지 확인한다.

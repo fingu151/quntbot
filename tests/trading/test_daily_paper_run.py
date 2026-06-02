@@ -239,7 +239,10 @@ def test_intraday_monitor_registers_only_stop_monitor(monkeypatch):
 
     monkeypatch.setattr(script, "BlockingScheduler", FakeScheduler)
     monkeypatch.setattr(script, "KisClient", MagicMock(return_value="client"))
-    monkeypatch.setattr(script, "TradingEngine", MagicMock(return_value="engine"))
+    engine_ctor = MagicMock(return_value="engine")
+    monkeypatch.setattr(script, "TradingEngine", engine_ctor)
+    monkeypatch.setattr(script, "get_engine", MagicMock(return_value="db-engine"))
+    monkeypatch.setattr(script, "create_tables", MagicMock())
     monkeypatch.setattr(script, "_stop_loss_job", stop_job)
 
     script.run_intraday_stop_monitor(now=datetime(2026, 5, 12, 10, 0, tzinfo=script.KST))
@@ -247,6 +250,7 @@ def test_intraday_monitor_registers_only_stop_monitor(monkeypatch):
     assert len(jobs) == 1
     assert jobs[0][1]["id"] == "intraday_stop_loss"
     assert jobs[0][1]["kwargs"] == {"engine": "engine"}
+    assert engine_ctor.call_args.kwargs["atr_lookup"] is not None
     stop_job.assert_called_once_with("engine")
 
 
@@ -268,6 +272,8 @@ def test_intraday_monitor_skips_immediate_check_outside_market_hours(monkeypatch
     monkeypatch.setattr(script, "BlockingScheduler", FakeScheduler)
     monkeypatch.setattr(script, "KisClient", MagicMock(return_value="client"))
     monkeypatch.setattr(script, "TradingEngine", MagicMock(return_value="engine"))
+    monkeypatch.setattr(script, "get_engine", MagicMock(return_value="db-engine"))
+    monkeypatch.setattr(script, "create_tables", MagicMock())
     monkeypatch.setattr(script, "_stop_loss_job", stop_job)
 
     script.run_intraday_stop_monitor(now=datetime(2026, 5, 12, 17, 36, tzinfo=script.KST))

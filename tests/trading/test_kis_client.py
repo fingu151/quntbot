@@ -239,6 +239,36 @@ def test_get_balance_sends_account_number(client: KisClient):
     assert params_used["CANO"] == "12345678"
 
 
+def test_get_balance_collects_paginated_holdings(client: KisClient):
+    client._access_token = "mock_token"
+    client._token_expires_at = float("inf")
+
+    first_page = {
+        "rt_cd": "0",
+        "ctx_area_fk100": "",
+        "ctx_area_nk100": "NEXT",
+        "output1": [{"pdno": "005930"}],
+        "output2": [{"tot_evlu_amt": "100000"}],
+    }
+    second_page = {
+        "rt_cd": "0",
+        "ctx_area_fk100": "",
+        "ctx_area_nk100": "",
+        "output1": [{"pdno": "000660"}],
+        "output2": [{"tot_evlu_amt": "100000"}],
+    }
+    with patch.object(
+        client._session,
+        "get",
+        side_effect=[_mock_response(first_page), _mock_response(second_page)],
+    ) as mock_get:
+        result = client.get_balance()
+
+    assert [row["pdno"] for row in result["output1"]] == ["005930", "000660"]
+    assert mock_get.call_count == 2
+    assert mock_get.call_args_list[1].kwargs["params"]["CTX_AREA_NK100"] == "NEXT"
+
+
 def test_get_current_price_sends_ticker(client: KisClient):
     """현재가 조회 시 종목코드가 쿼리 파라미터에 포함된다."""
     client._access_token = "mock_token"

@@ -40,6 +40,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--force-overwrite-report", action="store_true")
     parser.add_argument("--review-before-execute", action="store_true")
     parser.add_argument(
+        "--skip-ticker",
+        action="append",
+        default=[],
+        help="Ticker to remove from the dry-run order list before execution. Repeat for partial-run resume.",
+    )
+    parser.add_argument(
         "--force-market-closed",
         action="store_true",
         help="Bypass the weekday 09:00-15:20 KST guard for intentional rejection tests.",
@@ -84,6 +90,11 @@ def run(
         return 1
 
     sells, buys = _orders_from_payload(payload)
+    skip_tickers = {str(ticker) for ticker in args.skip_ticker}
+    if skip_tickers:
+        sells = [order for order in sells if order.ticker not in skip_tickers]
+        buys = [order for order in buys if order.ticker not in skip_tickers]
+        print(f"skipped_tickers={','.join(sorted(skip_tickers))}")
     factory = engine_factory or _default_engine_factory
     engine = factory()
 

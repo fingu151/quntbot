@@ -262,9 +262,9 @@ def replace_telegram_signals_for_date(
     rows: Iterable[dict[str, Any]],
 ) -> int:
     prepared = list(rows)
+    session.execute(delete(TelegramSignal).where(TelegramSignal.message_date == message_date))
     if not prepared:
         return 0
-    session.execute(delete(TelegramSignal).where(TelegramSignal.message_date == message_date))
     return upsert_telegram_signals(session, prepared)
 
 
@@ -408,16 +408,9 @@ def get_recent_research_report_scores(
 
 
 def get_latest_telegram_signals(session: Session, as_of_date: date) -> dict[str, float]:
-    """Return {ticker: raw_score} for the most recent message on or before as_of_date."""
-    latest_date = session.scalar(
-        select(func.max(TelegramSignal.message_date)).where(
-            TelegramSignal.message_date <= as_of_date
-        )
-    )
-    if latest_date is None:
-        return {}
+    """Return {ticker: raw_score} for the same-day Telegram morning brief."""
     rows = session.scalars(
-        select(TelegramSignal).where(TelegramSignal.message_date == latest_date)
+        select(TelegramSignal).where(TelegramSignal.message_date == as_of_date)
     ).all()
     return {row.ticker: row.raw_score for row in rows}
 

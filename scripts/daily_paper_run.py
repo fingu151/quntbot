@@ -17,9 +17,10 @@ import scripts.execute_rebalance_from_dry_run as execute
 import scripts.prepare_and_review_rebalance as prepare_review
 import scripts.review_rebalance_reports as review_reports
 import scripts.sync_phase1_data as sync_phase1
+from src.data.database import create_tables, get_engine
 from src.trading.engine import TradingEngine
 from src.trading.kis_client import KisClient
-from src.trading.scheduler import BlockingScheduler, _stop_loss_job
+from src.trading.scheduler import BlockingScheduler, _load_daily_price_atr, _stop_loss_job
 
 
 RunFunction = Callable[[argparse.Namespace], int]
@@ -118,7 +119,17 @@ def run_intraday_stop_monitor(now: datetime | None = None) -> None:
     The daily one-shot script already executed the rebalance. This monitor avoids
     registering another rebalance job in the same process.
     """
-    engine = TradingEngine(KisClient())
+    db_engine = get_engine()
+    create_tables(db_engine)
+    engine = TradingEngine(
+        KisClient(),
+        atr_lookup=lambda ticker, as_of_date, window: _load_daily_price_atr(
+            db_engine,
+            ticker,
+            as_of_date=as_of_date,
+            window=window,
+        ),
+    )
     scheduler = BlockingScheduler(timezone="Asia/Seoul")
     scheduler.add_job(
         _stop_loss_job,

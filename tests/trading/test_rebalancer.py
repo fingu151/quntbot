@@ -258,6 +258,67 @@ def test_execute_records_failed_on_error():
     assert result["sold"] == []
 
 
+def test_execute_records_failed_and_continues_when_sell_raises():
+    engine = MagicMock()
+    engine.sell.side_effect = [
+        {"rt_cd": "0"},
+        Exception("500 Server Error"),
+        {"rt_cd": "0"},
+    ]
+    sells = [
+        RebalanceOrder("005930", "SELL", 1, "first"),
+        RebalanceOrder("000660", "SELL", 1, "second"),
+        RebalanceOrder("000270", "SELL", 1, "third"),
+    ]
+
+    result = execute_rebalance(engine, sells, [])
+
+    assert result["sold"] == ["005930", "000270"]
+    assert result["failed"] == ["000660"]
+    assert engine.sell.call_count == 3
+
+
+def test_execute_skips_buys_when_any_sell_fails():
+    engine = MagicMock()
+    engine.sell.side_effect = [
+        {"rt_cd": "0"},
+        Exception("500 Server Error"),
+    ]
+    engine.buy.return_value = {"rt_cd": "0"}
+    sells = [
+        RebalanceOrder("005930", "SELL", 1, "first"),
+        RebalanceOrder("000660", "SELL", 1, "second"),
+    ]
+    buys = [RebalanceOrder("000270", "BUY", 1, "entry")]
+
+    result = execute_rebalance(engine, sells, buys)
+
+    assert result["sold"] == ["005930"]
+    assert result["failed"] == ["000660"]
+    assert result["bought"] == []
+    engine.buy.assert_not_called()
+
+
+def test_execute_records_failed_and_continues_when_buy_raises():
+    engine = MagicMock()
+    engine.buy.side_effect = [
+        {"rt_cd": "0"},
+        Exception("500 Server Error"),
+        {"rt_cd": "0"},
+    ]
+    buys = [
+        RebalanceOrder("005930", "BUY", 1, "first"),
+        RebalanceOrder("000660", "BUY", 1, "second"),
+        RebalanceOrder("000270", "BUY", 1, "third"),
+    ]
+
+    result = execute_rebalance(engine, [], buys)
+
+    assert result["bought"] == ["005930", "000270"]
+    assert result["failed"] == ["000660"]
+    assert engine.buy.call_count == 3
+
+
 def test_execute_rebalance_blocks_orders_when_dry_run_used_fallback_price(tmp_path):
     """dry-run에서 fallback 가격을 쓴 종목이 있으면 주문 실행 전에 차단한다."""
     engine = MagicMock()
@@ -311,6 +372,73 @@ def test_execute_rebalance_blocks_orders_when_dry_run_report_is_stale(tmp_path):
     engine.buy.assert_not_called()
 
 
+def test_execute_rebalance_blocks_when_orders_do_not_match_preflight_report(tmp_path):
+    engine = MagicMock()
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "orders": [
+                {"side": "SELL", "ticker": "005930", "qty": 5, "reason": "exclude"},
+                {"side": "BUY", "ticker": "000660", "qty": 2, "reason": "include"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    sells = [RebalanceOrder("005930", "SELL", 5, "exclude")]
+    buys = [RebalanceOrder("000270", "BUY", 2, "include")]
+
+    with pytest.raises(RuntimeError, match="order mismatch"):
+        execute_rebalance(
+            engine,
+            sells,
+            buys,
+            preflight_report_path=report_path,
+            enforce_preflight_order_match=True,
+        )
+
+    engine.sell.assert_not_called()
+    engine.buy.assert_not_called()
+
+
+def test_execute_rebalance_sell_only_order_match_ignores_report_buys(tmp_path):
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0"}
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "price_fallback_count": 1,
+            "price_lookup_failed_count": 1,
+            "price_fallbacks": [{"ticker": "000660", "price": 10000}],
+            "price_lookup_failures": ["000270"],
+            "orders": [
+                {"side": "SELL", "ticker": "005930", "qty": 5, "reason": "exclude"},
+                {"side": "BUY", "ticker": "000660", "qty": 2, "reason": "include"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    sells = [RebalanceOrder("005930", "SELL", 5, "exclude")]
+    buys = []
+
+    result = execute_rebalance(
+        engine,
+        sells,
+        buys,
+        preflight_report_path=report_path,
+        allow_buys=False,
+        enforce_preflight_order_match=True,
+    )
+
+    assert result["sold"] == ["005930"]
+    engine.buy.assert_not_called()
+
+
 def test_execute_rebalance_allows_twenty_daily_buys(tmp_path):
     engine = MagicMock()
     engine.buy.return_value = {"rt_cd": "0"}
@@ -343,6 +471,73 @@ def test_execute_rebalance_allows_twenty_daily_buys(tmp_path):
 
     assert len(result["bought"]) == 20
     assert engine.buy.call_count == 20
+
+
+def test_execute_rebalance_allows_thirty_daily_sells(tmp_path):
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0"}
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 0,
+            "sell_count": 30,
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+        }),
+        encoding="utf-8",
+    )
+    sells = [
+        RebalanceOrder(f"{idx:06d}", "SELL", 1, "rebalance exit")
+        for idx in range(30)
+    ]
+
+    result = execute_rebalance(
+        engine,
+        sells,
+        [],
+        preflight_report_path=report_path,
+        expected_preflight_date=date(2026, 5, 8),
+    )
+
+    assert len(result["sold"]) == 30
+    assert engine.sell.call_count == 30
+
+
+def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_sell_limit(tmp_path):
+    engine = MagicMock()
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 0,
+            "sell_count": 31,
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+        }),
+        encoding="utf-8",
+    )
+    sells = [
+        RebalanceOrder(f"{idx:06d}", "SELL", 1, "rebalance exit")
+        for idx in range(31)
+    ]
+
+    with pytest.raises(RuntimeError, match="daily sell limit"):
+        execute_rebalance(
+            engine,
+            sells,
+            [],
+            preflight_report_path=report_path,
+            expected_preflight_date=date(2026, 5, 8),
+        )
+
+    engine.sell.assert_not_called()
 
 
 def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp_path):

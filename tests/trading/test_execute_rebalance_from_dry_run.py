@@ -108,6 +108,56 @@ def test_run_executes_orders_from_clean_confirmed_dry_run(tmp_path):
     assert execute_func.call_args.kwargs["expected_preflight_date"] == date(2026, 5, 8)
 
 
+def test_run_skips_requested_tickers_from_dry_run_orders(tmp_path):
+    import scripts.execute_rebalance_from_dry_run as execute_script
+
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+            "orders": [
+                {"side": "SELL", "ticker": "000270", "qty": 3, "reason": "done"},
+                {"side": "SELL", "ticker": "012860", "qty": 2, "reason": "done"},
+                {"side": "SELL", "ticker": "023160", "qty": 1, "reason": "next"},
+                {"side": "BUY", "ticker": "066570", "qty": 1, "reason": "next"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    execute_func = MagicMock(return_value={"sold": ["023160"], "bought": ["066570"], "failed": []})
+    args = execute_script.parse_args([
+        "--dry-run-json",
+        str(report_path),
+        "--expected-date",
+        "2026-05-08",
+        "--confirm",
+        "EXECUTE_PAPER_REBALANCE",
+        "--skip-ticker",
+        "000270",
+        "--skip-ticker",
+        "012860",
+    ])
+
+    result = execute_script.run(
+        args,
+        engine_factory=MagicMock(return_value=MagicMock()),
+        execute_func=execute_func,
+        now=datetime(2026, 5, 4, 10, 0, tzinfo=KST),
+    )
+
+    sells = execute_func.call_args.args[1]
+    buys = execute_func.call_args.args[2]
+
+    assert result == 0
+    assert [order.ticker for order in sells] == ["023160"]
+    assert [order.ticker for order in buys] == ["066570"]
+
+
 def test_run_writes_execution_report_json(tmp_path):
     import scripts.execute_rebalance_from_dry_run as execute_script
 

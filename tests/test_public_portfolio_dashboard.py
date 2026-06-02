@@ -19,6 +19,7 @@ from scripts.public_portfolio_dashboard import (
     _build_css,
     _detail_html,
     _highlight_cards_html,
+    _hero_html,
     _holdings_table_html,
     _latest_not_found_quality_issues,
     _quality_dashboard_summary,
@@ -69,9 +70,24 @@ def _sample_snapshot() -> dict:
         "summary": {
             "holding_count": 1,
             "total_market_value": 720000,
+            "stock_market_value": 720000,
+            "cash_balance": 280000,
+            "total_asset_value": 1000000,
             "total_cost": 700000,
             "total_profit_loss": 20000,
             "total_profit_loss_rate": 2.86,
+            "realized_profit_loss": 12000,
+        },
+        "cash": {"available": 280000, "withdrawable": 270000, "source": "kis_balance"},
+        "realized": {"profit_loss": 12000, "source": "kis_balance"},
+        "market": {
+            "generated_at": "2026-05-12T09:00:00+09:00",
+            "source": "yahoo_chart",
+            "status": "OPEN",
+            "session_label": "정규장",
+            "kospi": {"value": 2780.5, "chg_pct": 0.5},
+            "kosdaq": {"value": 900.2, "chg_pct": -0.1},
+            "usdkrw": {"value": 1365.4, "chg_pct": 0.2},
         },
         "positions": [
             {
@@ -1351,6 +1367,16 @@ def test_dashboard_html_escapes_external_rank_and_report_count_values():
     assert "<script>" not in combined
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in combined
     assert "reports 0" in brief_html
+
+
+def test_hero_uses_total_assets_cash_and_realized_values():
+    html_text = _hero_html(_sample_snapshot())
+
+    assert "1,000,000" in html_text
+    assert "Cash · 현금" in html_text
+    assert "₩280,000" in html_text
+    assert "Realized · 실현" in html_text
+    assert "+₩12,000" in html_text
 
 
 def test_build_research_supplement_needs_prioritizes_portfolio_missing_and_issues():

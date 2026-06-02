@@ -1259,7 +1259,7 @@ def _ensure_equity_curve(snapshot: dict[str, Any]) -> list[float]:
         return [_to_float(v) for v in curve]
     # synthesize from current total + a deterministic random walk
     summary = snapshot.get("summary") or {}
-    end = _to_float(summary.get("total_market_value"))
+    end = _to_float(summary.get("total_asset_value") or summary.get("total_market_value"))
     cost = _to_float(summary.get("total_cost")) or end
     if not end:
         return [0.0] * 30
@@ -1533,7 +1533,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 .sk-head {{ display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); font-size: 10.5px; color: var(--tx-2); text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 4px; }}
 .sk-head .vals {{ color: var(--tx-1); }}
 
-.hero-substats {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }}
+.hero-substats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }}
 .ss {{ display: flex; flex-direction: column; gap: 2px; }}
 .ss .lbl {{ font-family: var(--mono); font-size: 10px; color: var(--tx-3); text-transform: uppercase; letter-spacing: 0.12em; }}
 .ss .val {{ font-family: var(--mono); font-size: 16px; color: var(--tx-0); font-variant-numeric: tabular-nums; }}
@@ -1752,12 +1752,20 @@ def _hero_html(snapshot: dict[str, Any]) -> str:
     summary = snapshot.get("summary") or {}
     positions = snapshot.get("positions") or []
     equity = _ensure_equity_curve(snapshot)
+    cash = snapshot.get("cash") or {}
+    realized = snapshot.get("realized") or {}
 
-    nav_value = _to_float(summary.get("total_market_value"))
+    stock_market_value = _to_float(summary.get("stock_market_value") or summary.get("total_market_value"))
+    cash_balance = _to_float(summary.get("cash_balance") if summary.get("cash_balance") is not None else cash.get("available"))
+    nav_value = _to_float(summary.get("total_asset_value")) or (stock_market_value + cash_balance)
     pl = _to_float(summary.get("total_profit_loss"))
     pl_rate = _to_float(summary.get("total_profit_loss_rate"))
     cost = _to_float(summary.get("total_cost"))
+    realized_pl = _to_float(summary.get("realized_profit_loss") if summary.get("realized_profit_loss") is not None else realized.get("profit_loss"))
+    realized_source = str(realized.get("source") or "unavailable")
+    realized_note = "KIS 잔고 기준" if realized_source == "kis_balance" else "데이터 없음"
     pl_gain = pl >= 0
+    realized_gain = realized_pl >= 0
 
     if len(equity) >= 2:
         day_amt = equity[-1] - equity[-2]
@@ -1806,7 +1814,8 @@ def _hero_html(snapshot: dict[str, Any]) -> str:
       <div class='hero-substats'>
         <div class='ss'><span class='lbl'>Cost · 매입원가</span><span class='val'>₩{_krw_int(cost)}</span><span class='sub'>unit basis</span></div>
         <div class='ss'><span class='lbl'>Holdings · 보유</span><span class='val'>{len(positions)} 종목</span><span class='sub'>long only</span></div>
-        <div class='ss'><span class='lbl'>Realized · 실현</span><span class='val'>₩0</span><span class='sub'>paper account</span></div>
+        <div class='ss'><span class='lbl'>Cash · 현금</span><span class='val'>₩{_krw_int(cash_balance)}</span><span class='sub'>available</span></div>
+        <div class='ss'><span class='lbl'>Realized · 실현</span><span class='val {"gain" if realized_gain else "loss"}'>{"+" if realized_gain else ""}₩{_krw_int(realized_pl)}</span><span class='sub'>{html.escape(realized_note)}</span></div>
         <div class='ss'><span class='lbl'>Strategy · 전략</span><span class='val' style='font-size:14px;'>QUNT v3.2</span><span class='sub'>multi-factor + flow</span></div>
       </div>
     </div>
@@ -2157,7 +2166,8 @@ def render_dashboard(snapshot: dict[str, Any]) -> None:
 
     positions = list(snapshot.get("positions") or [])
     positions.sort(key=lambda p: _to_float(p.get("market_value")), reverse=True)
-    total_mv = _to_float((snapshot.get("summary") or {}).get("total_market_value"))
+    summary = snapshot.get("summary") or {}
+    total_mv = _to_float(summary.get("stock_market_value") or summary.get("total_market_value"))
     session_state = getattr(st, "session_state", {})
 
     # selection state

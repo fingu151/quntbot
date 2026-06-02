@@ -143,6 +143,7 @@ def execute_rebalance(
     preflight_report_path: str | Path | None = None,
     expected_preflight_date: date | None = None,
     allow_buys: bool = True,
+    enforce_preflight_order_match: bool = False,
 ) -> dict[str, list[str]]:
     """compute_rebalance_orders 결과를 TradingEngine을 통해 실제 주문으로 실행한다.
 
@@ -162,6 +163,9 @@ def execute_rebalance(
             expected_preflight_date=expected_preflight_date,
             enforce_buy_limit=allow_buys,
             enforce_buy_price_checks=allow_buys,
+            expected_orders=sells + (buys if allow_buys else []),
+            enforce_order_match=enforce_preflight_order_match,
+            include_buy_orders=allow_buys,
         )
 
     result: dict[str, list[str]] = {"sold": [], "bought": [], "failed": []}
@@ -169,6 +173,7 @@ def execute_rebalance(
         buys = []
 
     # 매도 먼저
+    sell_failed = False
     for order in sells:
         try:
             resp = engine.sell(order.ticker, qty=order.qty, price=0)
@@ -177,12 +182,18 @@ def execute_rebalance(
                 logger.info(f"[리밸런서] 매도 접수 완료: {order.ticker}")
             else:
                 result["failed"].append(order.ticker)
+                sell_failed = True
                 logger.error(f"[리밸런서] 매도 실패: {order.ticker} → {resp.get('msg1')}")
-        except RuntimeError as e:
+        except Exception as e:
             result["failed"].append(order.ticker)
+            sell_failed = True
             logger.error(f"[리밸런서] 매도 한도 초과: {order.ticker} → {e}")
 
     # 매수
+    if sell_failed and buys:
+        logger.warning("[rebalancer] buys skipped because one or more sell orders failed")
+        buys = []
+
     for order in buys:
         try:
             resp = engine.buy(order.ticker, qty=order.qty, price=0)
@@ -192,7 +203,7 @@ def execute_rebalance(
             else:
                 result["failed"].append(order.ticker)
                 logger.error(f"[리밸런서] 매수 실패: {order.ticker} → {resp.get('msg1')}")
-        except RuntimeError as e:
+        except Exception as e:
             result["failed"].append(order.ticker)
             logger.error(f"[리밸런서] 매수 한도 초과: {order.ticker} → {e}")
 
@@ -209,11 +220,27 @@ def _assert_preflight_report_allows_orders(
     expected_preflight_date: date | None = None,
     enforce_buy_limit: bool = True,
     enforce_buy_price_checks: bool = True,
+    expected_orders: list[RebalanceOrder] | None = None,
+    enforce_order_match: bool = False,
+    include_buy_orders: bool = True,
 ) -> None:
     path = Path(report_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("dry_run") is not True:
         raise RuntimeError(f"preflight report is not a dry-run report: {path}")
+
+    if enforce_order_match:
+        report_orders = payload.get("orders") or []
+        if not include_buy_orders:
+            report_orders = [
+                order for order in report_orders if str(order.get("side", "")) != "BUY"
+            ]
+        actual = _order_fingerprint(report_orders)
+        expected = _order_fingerprint(expected_orders or [])
+        if actual != expected:
+            raise RuntimeError(
+                f"dry-run preflight blocked: order mismatch report={actual} expected={expected}"
+            )
 
     if expected_preflight_date is not None:
         report_date = payload.get("as_of_date")
@@ -256,3 +283,17 @@ def _assert_preflight_report_allows_orders(
             "dry-run preflight blocked: daily sell limit would be exceeded "
             f"({sell_count}/{SAFETY.max_daily_sells})"
         )
+
+
+def _order_fingerprint(orders: list[Any]) -> list[tuple[str, str, int]]:
+    fingerprint: list[tuple[str, str, int]] = []
+    for order in orders:
+        if isinstance(order, RebalanceOrder):
+            fingerprint.append((order.side, order.ticker, int(order.qty)))
+        else:
+            fingerprint.append((
+                str(order.get("side", "")),
+                str(order.get("ticker", "")),
+                int(order.get("qty", 0) or 0),
+            ))
+    return fingerprint

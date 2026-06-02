@@ -1,5 +1,140 @@
 # quntbot Progress Log
 
+## 2026-06-02 Live ATR stop integration
+
+### Completed
+
+- Added live ATR stop support to `TradingEngine.check_exit_rules()`.
+- ATR stop now applies before the fixed percentage stop for positions that have
+  not completed the first profit-take stage:
+  - ATR source: injected `atr_lookup(ticker, as_of_date, window)`;
+  - stop price: `avg_price - ATR * EXIT_RULES.atr_multiplier`;
+  - order path: full-position risk exit through `sell(..., enforce_daily_limit=False)`.
+- Added DB-backed ATR calculation in `src.trading.scheduler` using
+  `daily_prices` true range over `EXIT_RULES.atr_window`.
+- Wired ATR lookup into both:
+  - `run_scheduler()`;
+  - `scripts.daily_paper_run.run_intraday_stop_monitor()`.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_atr_stop_sells_before_static_stop -q`
+  failed because `TradingEngine.__init__()` did not accept `atr_lookup`.
+- RED:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_scheduler.py::test_load_daily_price_atr_uses_true_range tests\trading\test_scheduler.py::test_run_scheduler_injects_atr_lookup_into_trading_engine -q`
+  failed because scheduler had no ATR loader and did not inject an ATR lookup.
+- RED:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_daily_paper_run.py::test_intraday_monitor_registers_only_stop_monitor -q`
+  failed because `daily_paper_run` did not create a DB-backed ATR lookup.
+- GREEN:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py tests\trading\test_scheduler.py tests\trading\test_daily_paper_run.py tests\trading\test_rebalancer.py tests\trading\test_execute_rebalance_from_dry_run.py -q`
+  -> `100 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall config.py src\trading scripts\daily_paper_run.py tests\trading`
+  -> passed.
+
+## 2026-05-28 PAPER execution HTTP 500 handling
+
+### Completed
+
+- Investigated a partial PAPER rebalance execution failure:
+  - `000270` sell was accepted;
+  - `012860` sell was accepted;
+  - the next `order-cash` call returned HTTP `500`;
+  - `KisClient.place_order()` raised `requests.exceptions.HTTPError`;
+  - `execute_rebalance()` only caught `RuntimeError`, so the script crashed
+    instead of recording a per-ticker failure summary.
+- Updated `execute_rebalance()` to catch order-level exceptions and append the
+  ticker to `failed`, allowing the loop to continue and return a final summary.
+- Added `--skip-ticker` to `scripts/execute_rebalance_from_dry_run.py` so a
+  partial run can be resumed without retrying already accepted tickers.
+- No additional live/PAPER orders were submitted during this fix.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_rebalancer.py -q`
+  failed because a raised `Exception("500 Server Error")` escaped the sell/buy
+  loops.
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_execute_rebalance_from_dry_run.py -q`
+  failed because `--skip-ticker` was not recognized.
+- GREEN:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_execute_rebalance_from_dry_run.py tests\trading\test_rebalancer.py -q`
+  -> `38 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall src\trading scripts\execute_rebalance_from_dry_run.py tests\trading`
+  -> passed.
+
+## 2026-05-28 Rebalance sell cap aligned with 30-stock portfolio
+
+### Completed
+
+- Investigated the latest prepare/rebalance blocker:
+  - `data/dry_run_rebalance_latest.json` has `as_of_date=2026-05-28`;
+  - `holdings_count=37`;
+  - `target_count=30`;
+  - `sell_count=18`;
+  - `buy_count=10`;
+  - preflight blocked because the old daily sell limit was `10`.
+- Raised `SAFETY.max_daily_sells` from `10` to `30`, matching the current
+  30-stock portfolio design and allowing today's `18` planned position-cleanup
+  sells.
+- Kept the sell limit active: dry-run preflight now allows up to `30` sells and
+  still blocks `31+` planned sells.
+- No order path was executed during verification.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_rebalancer.py -q`
+  failed on `sell_count=30` with `daily sell limit would be exceeded (30/10)`.
+- GREEN:
+  - `.\venv\Scripts\python.exe -m pytest tests\trading\test_rebalancer.py -q`
+    -> `22 passed`;
+  - `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py -q`
+    -> `30 passed`;
+  - `.\venv\Scripts\python.exe -m pytest tests\trading\test_prepare_rebalance_for_execution.py tests\trading\test_check_rebalance_readiness.py tests\trading\test_scheduler.py -q`
+    -> `29 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall config.py src\trading scripts\prepare_rebalance_for_execution.py scripts\check_rebalance_readiness.py tests\trading`
+  -> passed.
+- Latest no-order readiness check:
+  `.\venv\Scripts\python.exe scripts\check_rebalance_readiness.py --dry-run-json data\dry_run_rebalance_latest.json --expected-date 2026-05-28`
+  -> `preflight_status=clean`, `execution_ready=true`.
+
+## 2026-05-28 Risk exits bypass daily sell cap
+
+### Completed
+
+- Confirmed the root cause: `SAFETY.max_daily_sells=10` was enforced by
+  `TradingEngine.sell()` for every sell path, so stop-loss and staged exit
+  monitor sells could be blocked after the daily sell counter reached the
+  rebalance/manual safety limit.
+- Kept normal/manual/rebalance `sell()` calls under the daily sell cap.
+- Added an explicit `enforce_daily_limit` switch to `TradingEngine.sell()` and
+  used `False` only for risk-exit paths:
+  - legacy stop-loss monitor;
+  - legacy trailing-stop monitor;
+  - staged full stop;
+  - staged first profit take;
+  - staged post-profit trailing bucket;
+  - staged breakeven bucket.
+- Rebalance dry-run preflight still blocks rebalance plans whose `sell_count`
+  exceeds `SAFETY.max_daily_sells`, so PAPER safety/readiness gates remain in
+  place.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py -q`
+  failed with `RuntimeError: 일일 매도 한도 초과: 1/1` in both
+  `check_stop_loss()` and `check_exit_rules()`.
+- GREEN: `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py -q`
+  -> `30 passed`.
+- Related trading tests:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py tests\trading\test_rebalancer.py tests\trading\test_scheduler.py -q`
+  -> `69 passed`.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall src\trading tests\trading`
+  -> passed.
+
 ## 2026-05-26 Remove minimum holding sell gate
 
 ### Completed
