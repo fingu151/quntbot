@@ -127,6 +127,30 @@ def test_check_daily_loss_reuses_same_day_anchor_after_restart(tmp_path):
     assert restarted_engine._daily_start_equity == 100_000_000
 
 
+def test_check_daily_loss_ignores_previous_day_anchor_after_rollover(tmp_path):
+    """며칠 살아있는 엔진의 새 날짜 첫 체크는 전날 기준자산을 쓰지 않는다."""
+    import json
+    from datetime import timedelta
+
+    anchor_path = tmp_path / "daily_anchor.json"
+    yesterday = date.today() - timedelta(days=1)
+    anchor_path.write_text(
+        json.dumps({"date": yesterday.isoformat(), "start_equity": 100_000_000}),
+        encoding="utf-8",
+    )
+
+    engine = _make_engine(daily_loss_limit=-0.03, daily_anchor_path=anchor_path)
+    engine._today = yesterday  # 전날부터 살아있는 엔진 시뮬레이션
+    engine._client.get_balance.return_value = {
+        "rt_cd": "0",
+        "output2": [{"tot_evlu_amt": "95000000"}],  # 전날 대비 -5%, 당일 손실 0%
+    }
+
+    assert engine.check_daily_loss_limit() is False
+    assert engine._daily_start_equity == 95_000_000
+    assert engine._today == date.today()
+
+
 def test_check_daily_loss_halts_when_intraday_drop_exceeds_limit():
     """당일 기준자산 대비 손실이 한도를 초과하면 halted=True 로 설정된다."""
     engine = _make_engine(daily_loss_limit=-0.03)

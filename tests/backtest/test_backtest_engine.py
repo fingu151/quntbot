@@ -701,3 +701,69 @@ def test_default_fast_scorer_uses_quality_metrics_for_ranking():
 
     first_buy = next(trade for trade in result.trades if trade.side == "BUY")
     assert first_buy.ticker == "BBB"
+
+
+def test_default_fast_scorer_skips_empty_fundamental_snapshots():
+    """최신 펀더멘털이 전부 비어 있으면 실거래 경로처럼 이전 유효 스냅샷으로 폴백한다."""
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    start_date = date(2026, 5, 15)
+    end_date = date(2026, 5, 16)
+    price_rows = []
+    for offset in range(130, -1, -1):
+        price_date = start_date.fromordinal(start_date.toordinal() - offset)
+        close = 100 + ((130 - offset) * 0.1)
+        for ticker in ["AAA", "BBB"]:
+            price_rows.append(
+                {"ticker": ticker, "date": price_date, "open": close, "close": close}
+            )
+    for ticker in ["AAA", "BBB"]:
+        price_rows.append({"ticker": ticker, "date": end_date, "open": 114, "close": 114})
+
+    with session_scope(engine) as session:
+        upsert_stocks(
+            session,
+            [
+                {"ticker": "AAA", "name": "Plain", "market": "KOSPI"},
+                {"ticker": "BBB", "name": "Cheap With Empty Latest", "market": "KOSPI"},
+            ],
+        )
+        upsert_daily_prices(session, price_rows)
+        upsert_fundamentals(
+            session,
+            [
+                {"ticker": "AAA", "date": start_date, "per": 10, "pbr": 1, "eps": 1, "bps": 10, "div": 1},
+                # BBB: 더 저평가된 과거 스냅샷 + 전부 0인 최신 스냅샷 (거래정지 등)
+                {"ticker": "BBB", "date": date(2026, 5, 1), "per": 5, "pbr": 0.5, "eps": 1, "bps": 10, "div": 1},
+                {"ticker": "BBB", "date": start_date, "per": 0, "pbr": 0, "eps": 0, "bps": 0, "div": 0},
+            ],
+        )
+        quality = {
+            "roe": 0.15,
+            "operating_margin": 0.10,
+            "debt_ratio": 0.5,
+            "published_at": date(2026, 3, 31),
+        }
+        upsert_quality_metrics(
+            session,
+            [
+                {"ticker": "AAA", "fiscal_year": 2025, "fiscal_quarter": 4, **quality},
+                {"ticker": "BBB", "fiscal_year": 2025, "fiscal_quarter": 4, **quality},
+            ],
+        )
+
+    result = run_backtest(
+        engine,
+        start_date=start_date,
+        end_date=end_date,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+    )
+
+    first_buy = next(trade for trade in result.trades if trade.side == "BUY")
+    assert first_buy.ticker == "BBB"
