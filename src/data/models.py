@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
@@ -11,7 +11,7 @@ class Base(DeclarativeBase):
 
 
 def utc_now() -> datetime:
-    # Python 3.10 호환을 위해 timezone.utc 사용 (3.11+ 의 datetime.UTC 와 동등)
+    # Python 3.10 ?명솚???꾪빐 timezone.utc ?ъ슜 (3.11+ ??datetime.UTC ? ?숇벑)
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
@@ -21,6 +21,7 @@ class Stock(Base):
     ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     market: Mapped[str] = mapped_column(String(20), nullable=False)
+    instrument_type: Mapped[str] = mapped_column(String(20), nullable=False, default="COMMON_STOCK")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
@@ -94,22 +95,6 @@ class QualityMetric(Base):
     published_at: Mapped[date | None] = mapped_column(Date)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
-
-class TelegramSignal(Base):
-    __tablename__ = "telegram_signals"
-    __table_args__ = (
-        UniqueConstraint("message_date", "ticker", name="uq_telegram_signals_date_ticker"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    message_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    ticker: Mapped[str] = mapped_column(String(12), nullable=False, index=True)
-    signal_type: Mapped[str] = mapped_column(String(10), nullable=False)  # "수혜" | "주의"
-    star_rating: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    raw_score: Mapped[float] = mapped_column(Float, nullable=False)
-    target_price: Mapped[float | None] = mapped_column(Float)
-    message_id: Mapped[int | None] = mapped_column(Integer)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class BusanstockSignal(Base):

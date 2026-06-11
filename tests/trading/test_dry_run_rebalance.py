@@ -1,4 +1,4 @@
-from datetime import date
+﻿from datetime import date
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -18,7 +18,8 @@ def _score(ticker: str, rank: int) -> FactorScore:
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=10.0 - rank,
         rank=rank,
     )
@@ -238,7 +239,7 @@ def test_parse_holdings_accepts_decimal_numeric_strings():
         "output1": [
             {
                 "pdno": "005930",
-                "prdt_name": "삼성전자",
+                "prdt_name": "?쇱꽦?꾩옄",
                 "hldg_qty": "5.0000",
                 "pchs_avg_pric": "168027.5860",
                 "prpr": "170100.0000",
@@ -251,7 +252,7 @@ def test_parse_holdings_accepts_decimal_numeric_strings():
     assert holdings == [
         {
             "ticker": "005930",
-            "name": "삼성전자",
+            "name": "?쇱꽦?꾩옄",
             "qty": 5,
             "avg_price": 168027,
             "current_price": 170100,
@@ -650,3 +651,4 @@ def test_run_scales_buy_weights_after_bond_yields_rise(tmp_path):
     assert payload["bond_yield_risk"]["buy_budget_multiplier"] == 0.7
     assert payload["combined_buy_budget_multiplier"] == 0.7
     assert payload["targets"][0]["target_weight"] == 0.105
+

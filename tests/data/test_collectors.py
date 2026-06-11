@@ -229,6 +229,7 @@ def test_sync_phase1_data_fails_before_deactivating_when_active_market_is_missin
 
 
 def _make_fake_universe(*, use_kospi=True, use_kosdaq=False, kospi_top_n=10,
+                        use_etf=False, etf_top_n=10,
                         kosdaq_top_n=10, lookback_days=1, min_value=0,
                         exclude_preferred=True, exclude_managed=False,
                         exclude_warning=False, exclude_suspended=False,
@@ -237,8 +238,10 @@ def _make_fake_universe(*, use_kospi=True, use_kosdaq=False, kospi_top_n=10,
     fake = MagicMock()
     fake.use_kospi = use_kospi
     fake.use_kosdaq = use_kosdaq
+    fake.use_etf = use_etf
     fake.kospi_top_n = kospi_top_n
     fake.kosdaq_top_n = kosdaq_top_n
+    fake.etf_top_n = etf_top_n
     fake.liquidity_lookback_days = lookback_days
     fake.min_avg_trading_value = min_value
     fake.exclude_preferred = exclude_preferred
@@ -256,11 +259,66 @@ def _ohlcv_df(tickers: list[str], values: list[float]) -> pd.DataFrame:
 def test_default_universe_config_uses_liquidity_ranked_kospi_kosdaq():
     assert collectors.UNIVERSE.use_kospi is True
     assert collectors.UNIVERSE.use_kosdaq is True
+    assert collectors.UNIVERSE.use_etf is False
     assert collectors.UNIVERSE.kospi_top_n == 400
     assert collectors.UNIVERSE.kosdaq_top_n == 200
     assert collectors.UNIVERSE.liquidity_lookback_days == 5
     assert collectors.UNIVERSE.min_avg_trading_value == 5_000_000_000
     assert collectors.UNIVERSE.exclude_unverifiable_status is True
+
+
+def test_pykrx_provider_can_add_etf_universe_rows():
+    provider = PykrxMarketDataProvider.__new__(PykrxMarketDataProvider)
+    provider.stock = MagicMock()
+    provider._known_etf_tickers = set()
+    provider.stock.get_etf_ticker_list.return_value = ["069500", "102110"]
+    provider.stock.get_etf_ohlcv_by_date.side_effect = [
+        pd.DataFrame({"거래대금": [20_000_000_000]}, index=[pd.Timestamp("2026-05-06")]),
+        pd.DataFrame({"거래대금": [10_000_000_000]}, index=[pd.Timestamp("2026-05-06")]),
+    ]
+    provider.stock.get_etf_ticker_name.side_effect = lambda t: f"ETF-{t}"
+
+    with patch.object(collectors, "UNIVERSE", _make_fake_universe(
+        use_kospi=False,
+        use_kosdaq=False,
+        use_etf=True,
+        etf_top_n=1,
+        min_value=0,
+    )):
+        rows = provider.get_universe(target_date=date(2026, 5, 6))
+
+    assert rows == [
+        {
+            "ticker": "069500",
+            "name": "ETF-069500",
+            "market": "ETF",
+            "instrument_type": "ETF",
+            "is_active": True,
+        }
+    ]
+
+
+def test_pykrx_provider_routes_known_etf_prices_to_etf_ohlcv_api():
+    provider = PykrxMarketDataProvider.__new__(PykrxMarketDataProvider)
+    provider.stock = MagicMock()
+    provider._known_etf_tickers = {"069500"}
+    provider.stock.get_etf_ohlcv_by_date.return_value = pd.DataFrame(
+        {"close": [100.0]},
+        index=[pd.Timestamp("2026-05-06")],
+    )
+
+    rows = provider.get_daily_prices("069500", date(2026, 5, 1), date(2026, 5, 6))
+
+    assert rows[0]["ticker"] == "069500"
+    assert rows[0]["date"] == date(2026, 5, 6)
+    provider.stock.get_etf_ohlcv_by_date.assert_called_once_with(
+        "20260501",
+        "20260506",
+        "069500",
+    )
+    provider.stock.get_market_ohlcv_by_date.assert_not_called()
+    assert provider.get_fundamentals("069500", date(2026, 5, 1), date(2026, 5, 6)) == []
+    assert provider.get_investor_flows("069500", date(2026, 5, 1), date(2026, 5, 6)) == []
 
 
 def test_pykrx_provider_excludes_preferred_stocks():

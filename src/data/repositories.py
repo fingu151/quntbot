@@ -19,7 +19,6 @@ from src.data.models import (
     ResearchReportBrief,
     ResearchReportSignal,
     Stock,
-    TelegramSignal,
     utc_now,
 )
 
@@ -65,12 +64,16 @@ def _upsert_many(
 
 
 def upsert_stocks(session: Session, rows: Iterable[dict[str, Any]]) -> int:
+    prepared = [
+        {**row, "instrument_type": row.get("instrument_type", "COMMON_STOCK")}
+        for row in rows
+    ]
     return _upsert_many(
         session,
         Stock,
-        rows,
+        prepared,
         conflict_columns=["ticker"],
-        update_columns=["name", "market", "is_active"],
+        update_columns=["name", "market", "instrument_type", "is_active"],
     )
 
 
@@ -246,28 +249,6 @@ def get_research_report_signals_by_keys(
     return rows
 
 
-def upsert_telegram_signals(session: Session, rows: Iterable[dict[str, Any]]) -> int:
-    return _upsert_many(
-        session,
-        TelegramSignal,
-        rows,
-        conflict_columns=["message_date", "ticker"],
-        update_columns=["signal_type", "star_rating", "raw_score", "target_price", "message_id"],
-    )
-
-
-def replace_telegram_signals_for_date(
-    session: Session,
-    message_date: date,
-    rows: Iterable[dict[str, Any]],
-) -> int:
-    prepared = list(rows)
-    session.execute(delete(TelegramSignal).where(TelegramSignal.message_date == message_date))
-    if not prepared:
-        return 0
-    return upsert_telegram_signals(session, prepared)
-
-
 def upsert_busanstock_signals(session: Session, rows: Iterable[dict[str, Any]]) -> int:
     return _upsert_many(
         session,
@@ -405,14 +386,6 @@ def get_recent_research_report_scores(
         if score != 0.0:
             scores[ticker] = score
     return scores
-
-
-def get_latest_telegram_signals(session: Session, as_of_date: date) -> dict[str, float]:
-    """Return {ticker: raw_score} for the same-day Telegram morning brief."""
-    rows = session.scalars(
-        select(TelegramSignal).where(TelegramSignal.message_date == as_of_date)
-    ).all()
-    return {row.ticker: row.raw_score for row in rows}
 
 
 def count_rows(session: Session) -> dict[str, int]:

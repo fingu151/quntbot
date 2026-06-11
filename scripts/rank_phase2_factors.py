@@ -45,8 +45,6 @@ def run(
         lookback_days=args.lookback_days,
     )
     if scores:
-        telegram_scored_count = sum(1 for score in scores if score.telegram_score != 0.0)
-        telegram_coverage = telegram_scored_count / len(scores)
         busanstock_scored_count = sum(1 for score in scores if score.busanstock_score != 0.0)
         busanstock_coverage = busanstock_scored_count / len(scores)
         investor_flow_scored_count = sum(1 for score in scores if score.investor_flow_score != 0.0)
@@ -57,8 +55,6 @@ def run(
         research_report_coverage = research_report_scored_count / len(scores)
         print(
             f"score_count={len(scores)} "
-            f"telegram_scored_count={telegram_scored_count} "
-            f"telegram_coverage={telegram_coverage:.1%} "
             f"busanstock_scored_count={busanstock_scored_count} "
             f"busanstock_coverage={busanstock_coverage:.1%} "
             f"investor_flow_scored_count={investor_flow_scored_count} "
@@ -76,7 +72,8 @@ def run(
             f"quality={score.quality_score:.4f} "
             f"momentum={score.momentum_score:.4f} "
             f"yield={score.yield_score:.4f} "
-            f"telegram={score.telegram_score:.4f} "
+            f"technical={score.technical_score:.4f} "
+            f"auxiliary={score.auxiliary_score:.4f} "
             f"busanstock={score.busanstock_score:.4f} "
             f"investor_flow={score.investor_flow_score:.4f} "
             f"research_report={score.research_report_score:.4f}"

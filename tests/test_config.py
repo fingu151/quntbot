@@ -22,29 +22,26 @@ def test_default_factor_scoring_method_uses_rank_to_limit_outlier_dominance():
     assert FACTOR.scoring_method == "rank"
 
 
-def test_default_factor_weights_reduce_yield_and_redistribute_to_core_factors():
-    redistributed = 1.0 + (0.25 / 3)
-
-    assert FACTOR.value_weight == pytest.approx(redistributed)
-    assert FACTOR.quality_weight == pytest.approx(redistributed)
-    assert FACTOR.momentum_weight == pytest.approx(redistributed)
-    assert FACTOR.yield_weight == pytest.approx(0.25)
-
-
-def test_default_telegram_signal_fetch_limit_covers_recent_channel_chatter():
-    assert config.TELEGRAM_SIGNAL.fetch_limit >= 20
+def test_default_factor_score_budget_is_100_points():
+    assert FACTOR.value_points == pytest.approx(25.0)
+    assert FACTOR.quality_points == pytest.approx(25.0)
+    assert FACTOR.momentum_points == pytest.approx(20.0)
+    assert FACTOR.yield_points == pytest.approx(5.0)
+    assert FACTOR.technical_points == pytest.approx(15.0)
+    assert FACTOR.auxiliary_points == pytest.approx(10.0)
+    assert FACTOR.score_budget_total == pytest.approx(100.0)
 
 
-def test_default_busanstock_weight_is_auxiliary():
-    assert 0 < FACTOR.busanstock_weight <= 0.3
+def test_telegram_signal_score_config_is_removed():
+    assert not hasattr(config, "TELEGRAM_SIGNAL")
 
 
-def test_default_investor_flow_weight_is_auxiliary():
-    assert 0 < FACTOR.investor_flow_weight <= 0.3
-
-
-def test_default_research_report_weight_is_auxiliary():
-    assert 0 < FACTOR.research_report_weight <= 0.3
+def test_default_auxiliary_signal_shares_sum_to_one():
+    assert (
+        FACTOR.busanstock_auxiliary_share
+        + FACTOR.investor_flow_auxiliary_share
+        + FACTOR.research_report_auxiliary_share
+    ) == pytest.approx(1.0)
 
 
 def test_default_research_report_source_uses_hankyung_consensus():

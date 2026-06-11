@@ -19,7 +19,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from config import DATA_DIR, DATABASE_URL, REBALANCE
 from src.data.database import get_engine, session_scope
-from src.data.models import BusanstockSignal, InvestorFlow, QualityMetric, TelegramSignal
+from src.data.models import BusanstockSignal, InvestorFlow, QualityMetric
 from src.factors.engine import calculate_factor_scores
 
 
@@ -456,14 +456,6 @@ def load_signal_details(
     try:
         engine = get_engine(database_url)
         with session_scope(engine) as session:
-            telegram_rows = session.scalars(
-                select(TelegramSignal)
-                .where(
-                    TelegramSignal.ticker.in_(tickers),
-                    TelegramSignal.message_date <= as_of_date,
-                )
-                .order_by(desc(TelegramSignal.message_date))
-            ).all()
             busanstock_rows = session.scalars(
                 select(BusanstockSignal).where(
                     BusanstockSignal.ticker.in_(tickers),
@@ -474,21 +466,6 @@ def load_signal_details(
         return {}
 
     result: dict[str, list[dict[str, Any]]] = {}
-    seen_telegram: set[str] = set()
-    for row in telegram_rows:
-        if row.ticker in seen_telegram:
-            continue
-        seen_telegram.add(row.ticker)
-        result.setdefault(row.ticker, []).append(
-            {
-                "source": "telegram",
-                "date": str(row.message_date),
-                "signal_type": row.signal_type,
-                "raw_score": float(row.raw_score),
-                "star_rating": int(row.star_rating or 0),
-                "target_price": row.target_price,
-            }
-        )
     for row in busanstock_rows:
         result.setdefault(row.ticker, []).append(
             {
@@ -584,7 +561,8 @@ def load_factor_details(
             "quality": score.quality_score,
             "momentum": score.momentum_score,
             "yield": score.yield_score,
-            "telegram": score.telegram_score,
+            "technical": score.technical_score,
+            "auxiliary": score.auxiliary_score,
             "busanstock": score.busanstock_score,
             "investor_flow": score.investor_flow_score,
             "research_report": score.research_report_score,
@@ -638,7 +616,8 @@ def _factor_scores(target: dict[str, Any], fallback: dict[str, float]) -> dict[s
         "quality": _factor_value(target, fallback, "quality", "quality_score"),
         "momentum": _factor_value(target, fallback, "momentum", "momentum_score"),
         "yield": _factor_value(target, fallback, "yield", "yield_score"),
-        "telegram": _factor_value(target, fallback, "telegram", "telegram_score"),
+        "technical": _factor_value(target, fallback, "technical", "technical_score"),
+        "auxiliary": _factor_value(target, fallback, "auxiliary", "auxiliary_score"),
         "busanstock": _factor_value(target, fallback, "busanstock", "busanstock_score"),
         "investor_flow": _factor_value(
             target,

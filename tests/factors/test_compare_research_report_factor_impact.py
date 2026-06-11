@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from argparse import Namespace
 from datetime import date
@@ -30,7 +30,8 @@ def _score(
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=total_score,
         rank=rank,
         busanstock_score=0.0,
@@ -102,3 +103,4 @@ def test_format_factor_impact_markdown_includes_read_only_guard():
 def test_parse_args_rejects_non_positive_top_n():
     with pytest.raises(SystemExit):
         parse_args(["--top-n", "0"])
+

@@ -547,7 +547,7 @@ def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp
         json.dumps({
             "dry_run": True,
             "as_of_date": "2026-05-08",
-            "buy_count": 21,
+            "buy_count": 31,
             "sell_count": 0,
             "price_fallback_count": 0,
             "price_lookup_failed_count": 0,
@@ -558,7 +558,7 @@ def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp
     )
     buys = [
         RebalanceOrder(f"{idx:06d}", "BUY", 1, "include")
-        for idx in range(21)
+        for idx in range(31)
     ]
 
     with pytest.raises(RuntimeError, match="daily buy limit"):

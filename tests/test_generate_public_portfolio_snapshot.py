@@ -43,7 +43,8 @@ def test_build_snapshot_summarizes_holdings_and_merges_dry_run_rationale() -> No
                 "quality_score": 0.2,
                 "momentum_score": 0.3,
                 "yield_score": 0.4,
-                "telegram_score": 0.5,
+                "technical_score": 0.5,
+                "auxiliary_score": 0.6,
                 "busanstock_score": 0.6,
                 "investor_flow_score": 0.7,
             }
@@ -90,6 +91,8 @@ def test_build_snapshot_summarizes_holdings_and_merges_dry_run_rationale() -> No
     assert position["profit_loss"] == 20000
     assert position["rationale"]["rank"] == 1
     assert position["rationale"]["order_reason"] == "target allocation buy"
+    assert position["rationale"]["factor_scores"]["technical"] == 0.5
+    assert position["rationale"]["factor_scores"]["auxiliary"] == 0.6
     assert position["rationale"]["factor_scores"]["investor_flow"] == 0.7
 
 
@@ -304,7 +307,8 @@ def test_build_snapshot_uses_factor_details_when_dry_run_target_has_only_total_s
                 "quality": 0.2,
                 "momentum": 0.3,
                 "yield": 0.4,
-                "telegram": 0.0,
+                "technical": 0.5,
+                "auxiliary": 0.6,
                 "busanstock": 0.6,
                 "investor_flow": 0.7,
                 "research_report": 0.8,
@@ -318,14 +322,15 @@ def test_build_snapshot_uses_factor_details_when_dry_run_target_has_only_total_s
         "quality": 0.2,
         "momentum": 0.3,
         "yield": 0.4,
-        "telegram": 0.0,
+        "technical": 0.5,
+        "auxiliary": 0.6,
         "busanstock": 0.6,
         "investor_flow": 0.7,
         "research_report": 0.8,
     }
 
 
-def test_telegram_signal_summary_does_not_expose_message_id() -> None:
+def test_signal_summary_does_not_expose_internal_ids() -> None:
     snapshot = build_snapshot(
         [
             {

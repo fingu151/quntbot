@@ -52,6 +52,7 @@ class PykrxMarketDataProvider:
         from pykrx import stock
 
         self.stock = stock
+        self._known_etf_tickers: set[str] = set()
 
     def _resolve_recent_business_date(self) -> str:
         # When date=None, some pykrx versions fail to find a business day if the
@@ -89,7 +90,77 @@ class PykrxMarketDataProvider:
                     UNIVERSE.kosdaq_top_n, UNIVERSE.liquidity_lookback_days, max_lookback_days,
                 )
             )
+        if getattr(UNIVERSE, "use_etf", False):
+            rows.extend(
+                self._build_etf_universe(
+                    resolved_date,
+                    UNIVERSE.etf_top_n,
+                    UNIVERSE.liquidity_lookback_days,
+                    max_lookback_days,
+                )
+            )
         return rows
+
+    def _build_etf_universe(
+        self,
+        target_date: date,
+        top_n: int,
+        lookback_days: int,
+        max_lookback_days: int,
+    ) -> list[dict[str, Any]]:
+        business_dates = self._get_recent_business_dates(target_date, lookback_days, max_lookback_days)
+        if not business_dates:
+            return []
+        try:
+            tickers = list(self.stock.get_etf_ticker_list(_format_date(business_dates[0])))
+        except Exception as exc:
+            logger.warning(f"ETF 종목 목록 조회 실패 ({business_dates[0]}): {exc}")
+            return []
+
+        trading_value_sum: dict[str, float] = {}
+        days_counted: dict[str, int] = {}
+        for ticker in tickers:
+            for business_date in business_dates:
+                try:
+                    frame = self.stock.get_etf_ohlcv_by_date(
+                        _format_date(business_date),
+                        _format_date(business_date),
+                        ticker,
+                    )
+                except Exception as exc:
+                    logger.warning(f"ETF OHLCV 조회 실패 ({ticker}, {business_date}): {exc}")
+                    continue
+                if frame.empty or "거래대금" not in frame.columns:
+                    continue
+                value = frame.iloc[-1]["거래대금"]
+                if pd.notna(value) and float(value) > 0:
+                    trading_value_sum[ticker] = trading_value_sum.get(ticker, 0.0) + float(value)
+                    days_counted[ticker] = days_counted.get(ticker, 0) + 1
+
+        eligible = [
+            (ticker, trading_value_sum[ticker] / max(days_counted.get(ticker, 1), 1))
+            for ticker in trading_value_sum
+            if trading_value_sum[ticker] / max(days_counted.get(ticker, 1), 1)
+            >= UNIVERSE.min_avg_trading_value
+        ]
+        eligible.sort(key=lambda item: item[1], reverse=True)
+        result = []
+        for ticker, _ in eligible[:top_n]:
+            try:
+                name = self.stock.get_etf_ticker_name(ticker)
+            except Exception:
+                name = ticker
+            self._known_etf_tickers.add(ticker)
+            result.append(
+                {
+                    "ticker": ticker,
+                    "name": name,
+                    "market": "ETF",
+                    "instrument_type": "ETF",
+                    "is_active": True,
+                }
+            )
+        return result
 
     def _build_market_universe(
         self,
@@ -243,17 +314,26 @@ class PykrxMarketDataProvider:
         return result
 
     def get_daily_prices(self, ticker: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
-        frame = self.stock.get_market_ohlcv_by_date(
-            _format_date(start_date),
-            _format_date(end_date),
-            ticker,
-            adjusted=True,
-        )
+        if ticker in getattr(self, "_known_etf_tickers", set()):
+            frame = self.stock.get_etf_ohlcv_by_date(
+                _format_date(start_date),
+                _format_date(end_date),
+                ticker,
+            )
+        else:
+            frame = self.stock.get_market_ohlcv_by_date(
+                _format_date(start_date),
+                _format_date(end_date),
+                ticker,
+                adjusted=True,
+            )
         if frame.empty:
             return []
         return _price_frame_to_rows(ticker, frame)
 
     def get_fundamentals(self, ticker: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
+        if ticker in getattr(self, "_known_etf_tickers", set()):
+            return []
         frame = self.stock.get_market_fundamental_by_date(
             _format_date(start_date),
             _format_date(end_date),
@@ -264,6 +344,8 @@ class PykrxMarketDataProvider:
         return _fundamental_frame_to_rows(ticker, frame)
 
     def get_investor_flows(self, ticker: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
+        if ticker in getattr(self, "_known_etf_tickers", set()):
+            return []
         frame = self.stock.get_market_trading_value_by_date(
             _format_date(start_date),
             _format_date(end_date),

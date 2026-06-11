@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+﻿from datetime import date, timedelta
 
 from src.backtest.models import BacktestResult
 from src.data.database import create_tables, get_engine, session_scope
@@ -22,7 +22,8 @@ def _score(ticker: str, total_score: float) -> FactorScore:
         quality_score=total_score,
         momentum_score=total_score,
         yield_score=0.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=total_score,
         rank=1,
     )
@@ -137,3 +138,4 @@ def test_run_adaptive_alpha_backtest_passes_isolated_strategy_defaults():
     assert captured["min_holding_trading_days"] == 0
     assert captured["enable_market_risk_overlay"] is True
     assert callable(captured["scoring_func"])
+

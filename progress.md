@@ -1,5 +1,53 @@
 # quntbot Progress Log
 
+## 2026-06-11 Quntbot improvement roadmap implementation slice
+
+### Completed
+
+- Removed MTProto Telegram stock-signal scoring paths while keeping Telegram
+  notifier configuration and notification code intact.
+- Replaced factor score output with a 100-point budget:
+  Value 25, Quality 25, Momentum 20, Yield 5, Technical 15, Auxiliary 10.
+- Added technical scoring plus a narrower hard filter for extreme overheat or
+  volatility.
+- Added `Stock.instrument_type` with SQLite migration support and ETF universe
+  collection scaffolding.
+- Added ETF backtest transaction-tax branching with ETF sells using 0% tax.
+- Updated rank and public snapshot output to expose `technical` and `auxiliary`
+  score fields instead of Telegram score fields.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\factors\test_engine.py::test_factor_score_contract_has_no_telegram_score_and_uses_100_point_budget tests\factors\test_engine.py::test_technical_score_contributes_points_without_requiring_old_filter_pass tests\data\test_database.py::test_create_tables_creates_phase1_tables tests\data\test_collectors.py::test_pykrx_provider_can_add_etf_universe_rows tests\backtest\test_backtest_engine.py::test_sell_uses_zero_transaction_tax_for_etf_market -q`
+  -> `5 passed`.
+- `.\venv\Scripts\python.exe -m pytest tests\factors tests\data tests\backtest\test_backtest_engine.py tests\test_config.py tests\test_generate_public_portfolio_snapshot.py tests\strategies\test_adaptive_alpha.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py -q`
+  -> `207 passed`.
+- `.\venv\Scripts\python.exe -m compileall config.py src scripts tests`
+  -> passed.
+- `.\venv\Scripts\python.exe -m pytest tests -q`
+  -> `634 passed`.
+- `.\venv\Scripts\python.exe scripts\check_rebalance_readiness.py`
+  -> blocked safely with `execution_ready=false` because market time was outside
+  weekday 09:00-15:20 KST and the latest dry-run report was stale
+  (`as_of_date=2026-06-10`, expected `2026-06-11`).
+
+## 2026-06-03 Daily buy limit raised to 30
+
+### Completed
+
+- Raised `SAFETY.max_daily_buys` from `20` to `30` after the 2026-06-03 dry-run
+  rebalance produced `buy_count=24` and was blocked at `prepare_review` by the
+  prior `24/20` daily buy limit.
+- Updated the default-parameter regression test and the rebalance preflight
+  guard test so buys above `30` remain blocked.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\test_strategy_defaults.py tests\trading\test_rebalancer.py::test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit -q`
+  -> 2 passed.
+
 ## 2026-06-02 Live ATR stop integration
 
 ### Completed

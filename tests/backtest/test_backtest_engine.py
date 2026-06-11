@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+﻿from datetime import date, timedelta
 
 import pytest
 
@@ -20,8 +20,8 @@ def seed_prices(engine):
         upsert_stocks(
             session,
             [
-                {"ticker": "AAA", "name": "상승", "market": "KOSPI"},
-                {"ticker": "BBB", "name": "하락", "market": "KOSDAQ"},
+                {"ticker": "AAA", "name": "?곸듅", "market": "KOSPI"},
+                {"ticker": "BBB", "name": "?섎씫", "market": "KOSDAQ"},
             ],
         )
         upsert_daily_prices(
@@ -39,43 +39,43 @@ def seed_prices(engine):
 
 def score_prefers_aaa(engine, *, as_of_date, lookback_days=None):
     return [
-        FactorScore("AAA", "상승", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 2, 1),
-        FactorScore("BBB", "하락", "KOSDAQ", as_of_date, -1, 0, -1, 0, 0, -2, 2),
+        FactorScore("AAA", "?곸듅", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 2, 1),
+        FactorScore("BBB", "?섎씫", "KOSDAQ", as_of_date, -1, 0, -1, 0, 0, 0, -2, 2),
     ]
 
 
 def score_switches_on_second_day(engine, *, as_of_date, lookback_days=None):
     if as_of_date < date(2026, 1, 2):
         return [
-            FactorScore("AAA", "상승", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 2, 1),
-            FactorScore("BBB", "하락", "KOSDAQ", as_of_date, -1, 0, -1, 0, 0, -2, 2),
+            FactorScore("AAA", "?곸듅", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 2, 1),
+            FactorScore("BBB", "?섎씫", "KOSDAQ", as_of_date, -1, 0, -1, 0, 0, 0, -2, 2),
         ]
     return [
-        FactorScore("BBB", "하락", "KOSDAQ", as_of_date, 1, 0, 1, 0, 0, 2, 1),
-        FactorScore("AAA", "상승", "KOSPI", as_of_date, -1, 0, -1, 0, 0, -2, 2),
+        FactorScore("BBB", "?섎씫", "KOSDAQ", as_of_date, 1, 0, 1, 0, 0, 0, 2, 1),
+        FactorScore("AAA", "?곸듅", "KOSPI", as_of_date, -1, 0, -1, 0, 0, 0, -2, 2),
     ]
 
 
 def score_prefers_bbb_then_aaa(engine, *, as_of_date, lookback_days=None):
     if as_of_date < date(2026, 1, 2):
         return [
-            FactorScore("BBB", "?섎씫", "KOSDAQ", as_of_date, 1, 0, 1, 0, 0, 2, 1),
-            FactorScore("AAA", "?곸듅", "KOSPI", as_of_date, -1, 0, -1, 0, 0, -2, 2),
+            FactorScore("BBB", "??롮뵭", "KOSDAQ", as_of_date, 1, 0, 1, 0, 0, 0, 2, 1),
+            FactorScore("AAA", "?怨몃뱟", "KOSPI", as_of_date, -1, 0, -1, 0, 0, 0, -2, 2),
         ]
     return [
-        FactorScore("AAA", "?곸듅", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 2, 1),
-        FactorScore("BBB", "?섎씫", "KOSDAQ", as_of_date, -1, 0, -1, 0, 0, -2, 2),
+        FactorScore("AAA", "?怨몃뱟", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 2, 1),
+        FactorScore("BBB", "??롮뵭", "KOSDAQ", as_of_date, -1, 0, -1, 0, 0, 0, -2, 2),
     ]
 
 
 def score_always_aaa(engine, *, as_of_date, lookback_days=None):
-    return [FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 2, 1)]
+    return [FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 2, 1)]
 
 
 def score_always_aaa_bbb(engine, *, as_of_date, lookback_days=None):
     return [
-        FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 2, 1),
-        FactorScore("BBB", "BBB", "KOSPI", as_of_date, 0, 0, 0, 0, 0, 0, 2),
+        FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 2, 1),
+        FactorScore("BBB", "BBB", "KOSPI", as_of_date, 0, 0, 0, 0, 0, 0, 0, 2),
     ]
 
 
@@ -157,7 +157,7 @@ def test_run_backtest_scores_previous_trading_day_and_executes_rebalance_at_open
 
     def score_records_signal_date(engine, *, as_of_date, lookback_days=None):
         signal_dates.append(as_of_date)
-        return [FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 2, 1)]
+        return [FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 2, 1)]
 
     result = run_backtest(
         engine,
@@ -373,6 +373,28 @@ def test_sell_uses_kosdaq_tax_rate():
 
     sell = next(trade for trade in result.trades if trade.side == "SELL" and trade.ticker == "BBB")
     assert sell.cost == pytest.approx(sell.gross_amount * 0.0020)
+
+
+def test_sell_uses_zero_transaction_tax_for_etf_market():
+    from src.backtest.engine import _sell_position
+
+    _, trade, _, _ = _sell_position(
+        ticker="069500",
+        quantity=1,
+        price=10_000,
+        trade_date=date(2026, 5, 2),
+        cash=0,
+        market="ETF",
+        entry_date=date(2026, 5, 1),
+        entry_value=10_000,
+        commission_rate=0.00015,
+        tax_rate_kospi=0.0020,
+        tax_rate_kosdaq=0.0020,
+        slippage_rate=0.0010,
+        reason="rebalance",
+    )
+
+    assert trade.cost == pytest.approx(10_000 * (0.00015 + 0.0010))
 
 
 def test_run_backtest_triggers_stop_loss_and_executes_next_open():
@@ -664,12 +686,12 @@ def test_rebalance_buffer_keeps_rank_just_outside_top_n():
     def score_func(_engine, *, as_of_date):
         if as_of_date <= date(2026, 1, 2):
             return [
-                FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 10.0, 1),
-                FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 9.0, 2),
+                FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 10.0, 1),
+                FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 9.0, 2),
             ]
         return [
-            FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 10.0, 1),
-            FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 9.0, 2),
+            FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 10.0, 1),
+            FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 9.0, 2),
         ]
 
     result = run_backtest(
@@ -698,8 +720,8 @@ def test_rebalance_sell_is_not_blocked_by_min_holding_days():
 
     def score_func(_engine, *, as_of_date):
         if as_of_date <= date(2026, 1, 2):
-            return [FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 10.0, 1)]
-        return [FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 10.0, 1)]
+            return [FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 10.0, 1)]
+        return [FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 10.0, 1)]
 
     result = run_backtest(
         engine,
@@ -729,8 +751,8 @@ def test_run_backtest_score_weighted_allocation_uses_target_scores():
 
     def score_func(_engine, *, as_of_date):
         return [
-            FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 3.0, 1),
-            FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 1.0, 2),
+            FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 3.0, 1),
+            FactorScore("BBB", "BBB", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 1.0, 2),
         ]
 
     result = run_backtest(
@@ -1105,3 +1127,4 @@ def test_default_fast_scorer_uses_quality_metrics_for_ranking():
 
     first_buy = next(trade for trade in result.trades if trade.side == "BUY")
     assert first_buy.ticker == "BBB"
+

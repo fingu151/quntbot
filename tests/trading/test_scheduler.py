@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+﻿from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,7 +103,8 @@ def test_rebalance_job_passes_dry_run_preflight_report_to_executor():
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=1.0,
         rank=1,
     )
@@ -164,7 +165,8 @@ def test_rebalance_job_passes_previous_closes_to_rebalancer():
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=1.0,
         rank=1,
     )
@@ -227,7 +229,8 @@ def test_rebalance_job_applies_buffer_and_target_weights_without_holding_age_gat
             quality_score=1.0,
             momentum_score=1.0,
             yield_score=1.0,
-            telegram_score=0.0,
+            technical_score=0.0,
+        auxiliary_score=0.0,
             total_score=score,
             rank=rank,
         )
@@ -307,7 +310,8 @@ def test_rebalance_job_applies_us_market_buy_budget_multiplier():
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=10.0,
         rank=1,
     )
@@ -379,7 +383,8 @@ def test_rebalance_job_combines_us_market_and_bond_yield_multipliers():
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=10.0,
         rank=1,
     )
@@ -433,7 +438,8 @@ def test_rebalance_job_runs_sell_only_when_daily_loss_limit_triggered():
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=1.0,
         rank=1,
     )
@@ -479,7 +485,8 @@ def test_rebalance_job_still_checks_exits_when_daily_loss_check_fails():
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=1.0,
         rank=1,
     )
@@ -677,7 +684,7 @@ def test_run_scheduler_uses_research_report_poll_window():
             scheduler.RESEARCH_REPORT.__class__(
                 enabled=True,
                 source="hankyung_consensus",
-                broker="한경 컨센서스",
+                broker="?쒓꼍 而⑥꽱?쒖뒪",
                 url="https://markets.hankyung.com/consensus",
                 poll_start_hour=7,
                 poll_end_hour=8,
@@ -691,3 +698,4 @@ def test_run_scheduler_uses_research_report_poll_window():
         if call.kwargs["id"] == "research_report_poll"
     )
     assert research_job.kwargs["hour"] == "7-8"
+

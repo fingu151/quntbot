@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import date
 from statistics import mean, pstdev
@@ -12,7 +12,6 @@ from src.data.database import session_scope
 from src.data.models import DailyPrice, Fundamental, QualityMetric, Stock
 from src.data.repositories import (
     get_latest_busanstock_signals,
-    get_latest_telegram_signals,
     get_recent_investor_flow_scores,
     get_recent_research_report_scores,
 )
@@ -47,14 +46,12 @@ def calculate_factor_scores(
     if raw.empty:
         return []
     with session_scope(engine) as session:
-        telegram_signals = get_latest_telegram_signals(session, as_of_date)
         busanstock_signals = get_latest_busanstock_signals(session, as_of_date)
         investor_flow_signals = get_recent_investor_flow_scores(session, as_of_date)
         research_report_signals = get_recent_research_report_scores(session, as_of_date)
     return calculate_factor_scores_from_df(
         raw,
         as_of_date=as_of_date,
-        telegram_signals=telegram_signals,
         busanstock_signals=busanstock_signals,
         investor_flow_signals=investor_flow_signals,
         research_report_signals=research_report_signals,
@@ -65,29 +62,28 @@ def calculate_factor_scores_from_df(
     raw: pd.DataFrame,
     *,
     as_of_date: date,
-    telegram_signals: dict[str, float] | None = None,
     busanstock_signals: dict[str, float] | None = None,
     investor_flow_signals: dict[str, float] | None = None,
     research_report_signals: dict[str, float] | None = None,
     apply_buy_filters: bool = True,
 ) -> list[FactorScore]:
-    """DataFrame(ticker,name,market,per,pbr,eps,bps,div,momentum_return) → FactorScore 리스트."""
+    """DataFrame(ticker,name,market,per,pbr,eps,bps,div,momentum_return) ??FactorScore 由ъ뒪??"""
     df = raw.copy()
     if apply_buy_filters:
         df = _apply_buy_candidate_filters(df, as_of_date=as_of_date)
         if df.empty:
             return []
 
-    # --- 가치 팩터 ---
     df["per_score"] = score_series(
         df["per"], higher_is_better=False, method=FACTOR.scoring_method, require_positive=True
     )
     df["pbr_score"] = score_series(
         df["pbr"], higher_is_better=False, method=FACTOR.scoring_method, require_positive=True
     )
-    df["value_score"] = df[["per_score", "pbr_score"]].mean(axis=1)
+    df["value_score"] = _score_to_points(
+        df[["per_score", "pbr_score"]].mean(axis=1), FACTOR.value_points
+    )
 
-    # --- Quality factor: DART ROE / operating margin / debt ratio ---
     for column in ("roe", "operating_margin", "debt_ratio"):
         if column not in df:
             df[column] = float("nan")
@@ -100,7 +96,10 @@ def calculate_factor_scores_from_df(
     df["debt_score"] = score_series(
         df["debt_ratio"], higher_is_better=False, method=FACTOR.scoring_method
     )
-    df["quality_score"] = df[["roe_score", "opm_score", "debt_score"]].mean(axis=1)
+    df["quality_score"] = _score_to_points(
+        df[["roe_score", "opm_score", "debt_score"]].mean(axis=1),
+        FACTOR.quality_points,
+    )
     total = len(df)
     covered = int(df["quality_score"].notna().sum())
     if total:
@@ -108,29 +107,24 @@ def calculate_factor_scores_from_df(
             f"quality_score covered {covered}/{total} ({covered / total:.0%}) on {as_of_date}"
         )
 
-    # --- 모멘텀 팩터 ---
-    df["momentum_score"] = score_series(
-        df["momentum_return"], higher_is_better=True, method=FACTOR.scoring_method
+    df["momentum_score"] = _score_to_points(
+        score_series(df["momentum_return"], higher_is_better=True, method=FACTOR.scoring_method),
+        FACTOR.momentum_points,
     )
-
-    # --- 배당수익률 팩터 ---
-    df["yield_score"] = score_series(
-        df["div"], higher_is_better=True, method=FACTOR.scoring_method
+    df["yield_score"] = _score_to_points(
+        score_series(df["div"], higher_is_better=True, method=FACTOR.scoring_method),
+        FACTOR.yield_points,
     )
-
-    # --- 텔레그램 모닝 신호 팩터 ---
-    if telegram_signals:
-        df["telegram_raw"] = df["ticker"].map(telegram_signals)
-    else:
-        df["telegram_raw"] = float("nan")
-    df["telegram_score"] = score_series(
-        df["telegram_raw"], higher_is_better=True, method=FACTOR.scoring_method
-    )
-
-    # NaN → 0 (해당 팩터 데이터 없는 종목도 나머지 팩터로 편입 가능)
     df["quality_score"] = df["quality_score"].fillna(0.0)
     df["yield_score"] = df["yield_score"].fillna(0.0)
-    df["telegram_score"] = df["telegram_score"].fillna(0.0)
+    df["technical_score"] = df.apply(
+        lambda row: technical_score(
+            row.get("recent_closes"),
+            row.get("recent_volumes"),
+            max_points=FACTOR.technical_points,
+        ),
+        axis=1,
+    )
     if busanstock_signals:
         df["busanstock_score"] = df["ticker"].map(busanstock_signals).fillna(0.0)
     else:
@@ -143,21 +137,25 @@ def calculate_factor_scores_from_df(
         df["research_report_score"] = df["ticker"].map(research_report_signals).fillna(0.0)
     else:
         df["research_report_score"] = 0.0
-
-    df["total_score"] = combine_scores(
-        df,
-        weights={
-            "value_score": FACTOR.value_weight,
-            "quality_score": FACTOR.quality_weight,
-            "momentum_score": FACTOR.momentum_weight,
-            "yield_score": FACTOR.yield_weight,
-            "telegram_score": FACTOR.telegram_weight,
-            "busanstock_score": FACTOR.busanstock_weight,
-            "investor_flow_score": FACTOR.investor_flow_weight,
-            "research_report_score": FACTOR.research_report_weight,
-        },
-        scale_to=100.0,
+    df["auxiliary_score"] = (
+        df["busanstock_score"].apply(_bounded_signal)
+        * FACTOR.auxiliary_points
+        * FACTOR.busanstock_auxiliary_share
+        + df["investor_flow_score"].apply(_bounded_signal)
+        * FACTOR.auxiliary_points
+        * FACTOR.investor_flow_auxiliary_share
+        + df["research_report_score"].apply(_bounded_signal)
+        * FACTOR.auxiliary_points
+        * FACTOR.research_report_auxiliary_share
     )
+    df["total_score"] = (
+        df["value_score"]
+        + df["quality_score"]
+        + df["momentum_score"]
+        + df["yield_score"]
+        + df["technical_score"]
+        + df["auxiliary_score"]
+    ).clip(lower=0.0, upper=100.0)
     ranked = df.dropna(subset=["value_score", "momentum_score", "total_score"]).sort_values(
         ["total_score", "ticker"],
         ascending=[False, True],
@@ -175,7 +173,8 @@ def calculate_factor_scores_from_df(
                 quality_score=float(row["quality_score"]),
                 momentum_score=float(row["momentum_score"]),
                 yield_score=float(row["yield_score"]),
-                telegram_score=float(row["telegram_score"]),
+                technical_score=float(row["technical_score"]),
+                auxiliary_score=float(row["auxiliary_score"]),
                 total_score=float(row["total_score"]),
                 rank=rank,
                 busanstock_score=float(row["busanstock_score"]),
@@ -189,23 +188,35 @@ def calculate_factor_scores_from_df(
 def _apply_buy_candidate_filters(raw: pd.DataFrame, *, as_of_date: date) -> pd.DataFrame:
     df = raw.copy()
     before_count = len(df)
+    if "instrument_type" not in df:
+        df["instrument_type"] = "COMMON_STOCK"
+    common_stock = df["instrument_type"].fillna("COMMON_STOCK") != "ETF"
     for column in ("per", "pbr", "roe", "operating_margin", "debt_ratio"):
         if column not in df:
             df[column] = float("nan")
 
     per = pd.to_numeric(df["per"], errors="coerce")
     pbr = pd.to_numeric(df["pbr"], errors="coerce")
-    df = df[(per > 0) & (pbr > 0)].copy()
+    df = df[((per > 0) & (pbr > 0)) | ~common_stock].copy()
 
+    common_stock = df["instrument_type"].fillna("COMMON_STOCK") != "ETF"
     metric_counts = df[["roe", "operating_margin", "debt_ratio"]].notna().sum(axis=1)
-    quality_coverage = float((metric_counts >= MIN_QUALITY_METRIC_COUNT).mean()) if len(df) else 0.0
+    common_metric_counts = metric_counts[common_stock]
+    quality_coverage = (
+        float((common_metric_counts >= MIN_QUALITY_METRIC_COUNT).mean())
+        if len(common_metric_counts)
+        else 1.0
+    )
     if quality_coverage >= MIN_QUALITY_COVERAGE_RATIO:
         roe = pd.to_numeric(df["roe"], errors="coerce")
         debt_ratio = pd.to_numeric(df["debt_ratio"], errors="coerce")
         df = df[
-            (metric_counts >= MIN_QUALITY_METRIC_COUNT)
-            & (roe > 0)
-            & (debt_ratio < MAX_DEBT_RATIO)
+            ~common_stock
+            | (
+                (metric_counts >= MIN_QUALITY_METRIC_COUNT)
+                & (roe > 0)
+                & (debt_ratio < MAX_DEBT_RATIO)
+            )
         ].copy()
     elif len(df):
         logger.warning(
@@ -226,7 +237,7 @@ def _apply_buy_candidate_filters(raw: pd.DataFrame, *, as_of_date: date) -> pd.D
         ].copy()
 
     if "recent_closes" in df:
-        df = df[df["recent_closes"].apply(_technical_filter_passes)].copy()
+        df = df[~df["recent_closes"].apply(technical_hard_filter)].copy()
 
     excluded_count = before_count - len(df)
     if excluded_count:
@@ -248,15 +259,28 @@ def _has_consecutive_severe_operating_loss(value: object) -> bool:
     return all(margin < SEVERE_LOSS_MARGIN_THRESHOLD for margin in margins)
 
 
-def _technical_filter_passes(value: object) -> bool:
-    if not isinstance(value, (list, tuple)):
-        return False
+def _score_to_points(values: pd.Series, max_points: float) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").astype(float)
+    return numeric.clip(lower=0.0, upper=1.0) * max_points
+
+
+def _bounded_signal(value: object) -> float:
     try:
-        closes = [float(item) for item in value if item is not None]
+        numeric = float(value)
     except (TypeError, ValueError):
-        return False
+        return 0.0
+    return max(-1.0, min(1.0, numeric))
+
+
+def technical_score(
+    closes_value: object,
+    volumes_value: object | None = None,
+    *,
+    max_points: float = 15.0,
+) -> float:
+    closes = _coerce_float_list(closes_value)
     if not closes:
-        return False
+        return 0.0
 
     signal_close = closes[-1]
     ma20 = _moving_average(closes, TECH_MA_SHORT_WINDOW)
@@ -264,14 +288,61 @@ def _technical_filter_passes(value: object) -> bool:
     ma60_20d_ago = _moving_average(closes[:-TECH_MA_SLOPE_LOOKBACK], TECH_MA_MEDIUM_WINDOW)
     rsi14 = _rsi(closes, TECH_RSI_WINDOW)
     volatility_20d = _daily_return_volatility(closes, TECH_VOLATILITY_WINDOW)
+    volumes = _coerce_float_list(volumes_value)
+    volume_ratio = _latest_to_average_ratio(volumes, TECH_VOLATILITY_WINDOW)
 
     conditions = [
         ma20 is not None and signal_close > ma20,
         ma60_today is not None and ma60_20d_ago is not None and ma60_today > ma60_20d_ago,
+        ma20 is not None and ma60_today is not None and ma20 > ma60_today,
         rsi14 is not None and rsi14 < TECH_MAX_RSI,
         volatility_20d is not None and volatility_20d < TECH_MAX_DAILY_VOLATILITY,
+        volume_ratio is not None and volume_ratio >= 1.0,
     ]
-    return sum(conditions) >= TECH_MIN_PASSED_CONDITIONS
+    return max_points * (sum(1 for item in conditions if item) / len(conditions))
+
+
+def technical_hard_filter(value: object) -> bool:
+    closes = _coerce_float_list(value)
+    if not closes:
+        return False
+    rsi14 = _rsi(closes, TECH_RSI_WINDOW)
+    volatility_20d = _daily_return_volatility(closes, TECH_VOLATILITY_WINDOW)
+    ma20 = _moving_average(closes, 20)
+    ma20_stretch = (
+        closes[-1] / ma20 - 1.0
+        if ma20 is not None and ma20 > 0
+        else 0.0
+    )
+    return (
+        (rsi14 is not None and rsi14 >= 90.0 and ma20_stretch >= 0.2)
+        or (volatility_20d is not None and volatility_20d >= 0.08)
+    )
+
+
+def _technical_filter_passes(value: object) -> bool:
+    """Backward-compatible wrapper for older callers."""
+    return not technical_hard_filter(value) and technical_score(value) >= (
+        FACTOR.technical_points * (TECH_MIN_PASSED_CONDITIONS / 4)
+    )
+
+
+def _coerce_float_list(value: object) -> list[float]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    try:
+        return [float(item) for item in value if item is not None]
+    except (TypeError, ValueError):
+        return []
+
+
+def _latest_to_average_ratio(values: list[float], window: int) -> float | None:
+    if len(values) < window or values[-1] <= 0:
+        return None
+    average_value = mean(values[-window:])
+    if average_value <= 0:
+        return None
+    return values[-1] / average_value
 
 
 def _moving_average(values: list[float], window: int) -> float | None:
@@ -322,19 +393,22 @@ def _load_factor_inputs(engine: Engine, *, as_of_date: date, lookback_days: int)
             if len(prices) <= lookback_days:
                 continue
 
-            current_price = prices[0]   # desc 순서: 최신
-            lookback_price = prices[-1]  # desc 순서: 가장 오래된 = lookback 시점
+            current_price = prices[0]   # desc ?쒖꽌: 理쒖떊
+            lookback_price = prices[-1]  # desc ?쒖꽌: 媛???ㅻ옒??= lookback ?쒖젏
             if not current_price.close or not lookback_price.close:
                 continue
 
-            fundamentals = session.scalars(
-                select(Fundamental)
-                .where(Fundamental.ticker == stock.ticker, Fundamental.date <= as_of_date)
-                .order_by(Fundamental.date.desc())
-            ).all()
-            fundamental = _latest_non_empty_fundamental(fundamentals)
-            if fundamental is None:
-                continue
+            if stock.instrument_type == "ETF":
+                fundamental = None
+            else:
+                fundamentals = session.scalars(
+                    select(Fundamental)
+                    .where(Fundamental.ticker == stock.ticker, Fundamental.date <= as_of_date)
+                    .order_by(Fundamental.date.desc())
+                ).all()
+                fundamental = _latest_non_empty_fundamental(fundamentals)
+                if fundamental is None:
+                    continue
             quality = _latest_available_quality_metric(
                 quality_metrics := session.scalars(
                     select(QualityMetric)
@@ -351,22 +425,25 @@ def _load_factor_inputs(engine: Engine, *, as_of_date: date, lookback_days: int)
                 as_of_date=as_of_date,
             )
             recent_closes = [float(price.close) for price in reversed(prices) if price.close is not None]
+            recent_volumes = [float(price.volume) for price in reversed(prices) if price.volume is not None]
 
             rows.append(
                 {
                     "ticker": stock.ticker,
                     "name": stock.name,
                     "market": stock.market,
-                    "per": fundamental.per,
-                    "pbr": fundamental.pbr,
-                    "eps": fundamental.eps,
-                    "bps": fundamental.bps,
-                    "div": fundamental.div,
+                    "instrument_type": stock.instrument_type,
+                    "per": fundamental.per if fundamental is not None else None,
+                    "pbr": fundamental.pbr if fundamental is not None else None,
+                    "eps": fundamental.eps if fundamental is not None else None,
+                    "bps": fundamental.bps if fundamental is not None else None,
+                    "div": fundamental.div if fundamental is not None else None,
                     "roe": quality.roe if quality is not None else None,
                     "operating_margin": quality.operating_margin if quality is not None else None,
                     "debt_ratio": quality.debt_ratio if quality is not None else None,
                     "recent_operating_margins": recent_operating_margins,
                     "recent_closes": recent_closes,
+                    "recent_volumes": recent_volumes,
                     "momentum_return": (current_price.close / lookback_price.close) - 1.0,
                 }
             )

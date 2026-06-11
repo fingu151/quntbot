@@ -27,7 +27,6 @@ pydantic==2.9.2                # Data validation (orders, config)
 
 # --- Notifications + dashboard (Phase 5) ---
 python-telegram-bot==21.7      # Telegram bot alerts
-telethon==1.38.1               # Telegram MTProto user API (channel reader)
 streamlit==1.40.1              # Web dashboard
 plotly==6.7.0                  # Interactive charts in public portfolio dashboard
 

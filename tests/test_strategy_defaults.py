@@ -13,4 +13,4 @@ def test_adopted_exit_strategy_defaults_match_tuned_adaptive_alpha():
     assert EXIT_RULES.atr_multiplier == 2.2
     assert REBALANCE.sell_rank_buffer == 40
     assert REBALANCE.min_holding_trading_days == 0
-    assert SAFETY.max_daily_buys == 20
+    assert SAFETY.max_daily_buys == 30

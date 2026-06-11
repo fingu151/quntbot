@@ -10,13 +10,12 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from loguru import logger
 from sqlalchemy import select
 
-from config import BUSANSTOCK_SIGNAL, PORTFOLIO, REBALANCE, RESEARCH_REPORT, TELEGRAM_SIGNAL
+from config import BUSANSTOCK_SIGNAL, PORTFOLIO, REBALANCE, RESEARCH_REPORT
 from src.data.collectors import PykrxMarketDataProvider, sync_phase1_data
 from src.data.database import create_tables, get_engine, session_scope
 from src.data.models import DailyPrice
 from src.signals.busanstock_reader import fetch_and_store_busanstock_signals
 from src.signals.research_report_reader import fetch_and_store_korean_research_reports
-from src.signals.telegram_reader import fetch_and_store_signals
 from src.factors.engine import calculate_factor_scores
 from src.trading.allocation import compute_score_weights
 from src.trading.bond_yield_risk import (
@@ -314,16 +313,6 @@ def _rebalance_job(
         logger.exception(f"Rebalance job failed: {exc}")
 
 
-def _telegram_signal_job(db_engine: object) -> None:
-    """Fetch and store today's morning briefing signals from Telegram channel."""
-    try:
-        count = fetch_and_store_signals(db_engine)
-        if count:
-            logger.info(f"Telegram signal job: {count} signals stored")
-    except Exception as exc:
-        logger.warning(f"Telegram signal job failed: {exc}")
-
-
 def _busanstock_signal_job(
     db_engine: object,
     *,
@@ -440,21 +429,6 @@ def run_scheduler() -> None:
         kwargs={"engine": engine},
         id="intraday_stop_loss",
     )
-
-    if TELEGRAM_SIGNAL.enabled:
-        scheduler.add_job(
-            _telegram_signal_job,
-            trigger="cron",
-            day_of_week="mon-fri",
-            hour=f"{TELEGRAM_SIGNAL.poll_start_hour}-{TELEGRAM_SIGNAL.poll_end_hour}",
-            minute="*/15",
-            kwargs={"db_engine": db_engine},
-            id="telegram_signal_poll",
-        )
-        logger.info(
-            f"Telegram signal polling enabled: "
-            f"{TELEGRAM_SIGNAL.poll_start_hour}:00-{TELEGRAM_SIGNAL.poll_end_hour}:00 KST every 15 min"
-        )
 
     scheduler.add_job(
         _busanstock_signal_job,

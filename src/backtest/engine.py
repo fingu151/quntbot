@@ -606,7 +606,7 @@ def _sell_position(
     reason: str,
 ) -> tuple[float, BacktestTrade, float, int]:
     gross_amount = quantity * price
-    tax_rate = tax_rate_kosdaq if _is_kosdaq_market(market) else tax_rate_kospi
+    tax_rate = 0.0 if market == "ETF" else tax_rate_kosdaq if _is_kosdaq_market(market) else tax_rate_kospi
     cost = gross_amount * (commission_rate + tax_rate + slippage_rate)
     cash += gross_amount - cost
     trade_return = ((gross_amount - cost) / entry_value) - 1.0 if entry_value > 0 else 0.0
