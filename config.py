@@ -54,7 +54,13 @@ class KISConfig:
         "KIS_LIVE_BASE_URL", "https://openapi.koreainvestment.com:9443"
     )
     quote_base_url: str = os.getenv(
-        "KIS_QUOTE_BASE_URL", "https://openapi.koreainvestment.com:9443"
+        "KIS_QUOTE_BASE_URL",
+        os.getenv(
+            "KIS_PAPER_BASE_URL" if TRADE_MODE == "PAPER" else "KIS_LIVE_BASE_URL",
+            "https://openapivts.koreainvestment.com:29443"
+            if TRADE_MODE == "PAPER"
+            else "https://openapi.koreainvestment.com:9443",
+        ),
     )
     request_timeout_sec: int = int(os.getenv("KIS_REQUEST_TIMEOUT_SEC", "10"))
     token_cache_path: Path = Path(
