@@ -7,7 +7,10 @@ from src.data.database import create_tables, get_engine, session_scope
 from src.data.repositories import upsert_daily_prices, upsert_market_index_prices
 from src.factors.models import FactorScore
 from src.trading import scheduler
+from src.trading.bond_yield_risk import BondYieldAdjustment
+from src.trading.macro_risk import MacroExposureAdjustment
 from src.trading.rebalancer import RebalanceOrder
+from src.trading.us_market_risk import UsMarketBuyAdjustment
 
 
 def test_pre_market_sync_job_records_success_for_today():
@@ -50,6 +53,20 @@ def test_pre_market_sync_job_records_failure_for_today():
     assert state.last_success_date is None
     assert state.last_failure_date == today
     assert state.last_error == "network down"
+
+
+def test_intraday_macro_risk_dry_run_job_invokes_report_runner_without_orders():
+    runner = MagicMock(return_value=0)
+
+    scheduler._intraday_macro_risk_dry_run_job(
+        today=date(2026, 5, 6),
+        run_func=runner,
+    )
+
+    args = runner.call_args.args[0]
+    assert args.as_of_date == date(2026, 5, 6)
+    assert str(args.output_json).endswith("macro_risk_rebalance_latest.json")
+    assert str(args.output_md).endswith("macro_risk_rebalance_latest.md")
 
 
 def test_rebalance_job_skips_when_required_pre_market_sync_missing():
@@ -127,6 +144,139 @@ def test_rebalance_job_passes_dry_run_preflight_report_to_executor():
     )
     assert execute.call_args.kwargs["expected_preflight_date"] == date(2026, 5, 6)
     assert execute.call_args.kwargs["enforce_preflight_order_match"] is True
+
+
+def test_rebalance_job_includes_macro_reduction_sells_for_preflight_match():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = False
+    engine.check_exit_rules.return_value = []
+    engine.get_holdings.return_value = [
+        {"ticker": "OLD", "name": "Old", "qty": 9, "current_price": 10000}
+    ]
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "10000"}]}
+    engine.get_exit_state_entry_dates.return_value = {}
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
+    score = FactorScore(
+        ticker="OLD",
+        name="Old",
+        market="KOSPI",
+        as_of_date=date(2026, 5, 6),
+        value_score=1.0,
+        quality_score=1.0,
+        momentum_score=1.0,
+        yield_score=1.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
+        total_score=1.0,
+        rank=1,
+    )
+    macro_adjustment = MacroExposureAdjustment(
+        status="risk_off",
+        buy_budget_multiplier=0.6,
+        cash_target=0.4,
+        signals=["NASDAQ:-3.00%"],
+        missing_sources=[],
+        us_market=UsMarketBuyAdjustment("risk_off", 0.6, 0.4, ["NASDAQ:-3.00%"], {}),
+        bond_yield=BondYieldAdjustment("neutral", 1.0, 0.0, [], {}),
+        indicator_signals=[],
+    )
+    execute = MagicMock(return_value={"sold": [], "bought": [], "failed": []})
+
+    with (
+        patch.object(scheduler, "_get_previous_closes", MagicMock(return_value={})),
+        patch.object(scheduler, "execute_rebalance", execute),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine="db-engine",
+            sync_state=state,
+            today=date(2026, 5, 6),
+            score_func=MagicMock(return_value=[score]),
+            macro_adjustment_loader=MagicMock(return_value=macro_adjustment),
+        )
+
+    sells = execute.call_args.args[1]
+    buys = execute.call_args.args[2]
+    assert sells == [
+        RebalanceOrder("OLD", "SELL", 3, "macro_risk_reduce to 40% cash target")
+    ]
+    assert buys == []
+
+
+def test_rebalance_job_includes_inverse_etf_hedge_orders_for_preflight_match(monkeypatch):
+    from config import InverseEtfHedgeConfig
+
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = False
+    engine.check_exit_rules.return_value = []
+    engine.get_holdings.return_value = [
+        {"ticker": "OLD", "name": "Old", "qty": 900, "avg_price": 10000, "current_price": 10000}
+    ]
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "1000000"}]}
+    engine.get_current_price.side_effect = [
+        {"rt_cd": "0", "output": {"stck_prpr": "10000"}},
+        {"rt_cd": "0", "output": {"stck_prpr": "5000"}},
+    ]
+    engine.get_exit_state_entry_dates.return_value = {}
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
+    score = FactorScore(
+        ticker="OLD",
+        name="Old",
+        market="KOSPI",
+        as_of_date=date(2026, 5, 6),
+        value_score=1.0,
+        quality_score=1.0,
+        momentum_score=1.0,
+        yield_score=1.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
+        total_score=1.0,
+        rank=1,
+    )
+    macro_adjustment = MacroExposureAdjustment(
+        status="risk_off",
+        buy_budget_multiplier=0.6,
+        cash_target=0.4,
+        signals=["NASDAQ:-6.00%"],
+        missing_sources=[],
+        us_market=UsMarketBuyAdjustment("risk_off", 0.6, 0.4, ["NASDAQ:-6.00%"], {"NASDAQ": -0.06}),
+        bond_yield=BondYieldAdjustment("neutral", 1.0, 0.0, [], {}),
+        indicator_signals=[],
+    )
+    execute = MagicMock(return_value={"sold": [], "bought": [], "failed": []})
+    monkeypatch.setattr(
+        scheduler,
+        "INVERSE_ETF",
+        InverseEtfHedgeConfig(
+            allowed_tickers=("INV1", "INV2"),
+            leveraged_tickers=("INV2",),
+        ),
+    )
+
+    with (
+        patch.object(scheduler, "_get_previous_closes", MagicMock(return_value={})),
+        patch.object(scheduler, "_load_domestic_index_closes", MagicMock(return_value={})),
+        patch.object(scheduler, "execute_rebalance", execute),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine="db-engine",
+            sync_state=state,
+            today=date(2026, 5, 6),
+            score_func=MagicMock(return_value=[score]),
+            macro_adjustment_loader=MagicMock(return_value=macro_adjustment),
+        )
+
+    buys = execute.call_args.args[2]
+    assert any(
+        order == RebalanceOrder(
+            "INV2",
+            "BUY",
+            60,
+            "inverse_etf_hedge_market_drop+inverse_etf_hedge_macro_risk_off target 3.00%",
+        )
+        for order in buys
+    )
 
 
 def test_rebalance_job_passes_previous_closes_to_rebalancer():

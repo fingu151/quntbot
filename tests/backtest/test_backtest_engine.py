@@ -1128,3 +1128,162 @@ def test_default_fast_scorer_uses_quality_metrics_for_ranking():
     first_buy = next(trade for trade in result.trades if trade.side == "BUY")
     assert first_buy.ticker == "BBB"
 
+
+def test_macro_risk_overlay_reduces_positions_even_when_legacy_market_overlay_disabled():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_stocks(session, [{"ticker": "AAA", "name": "AAA", "market": "KOSPI"}])
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "AAA", "date": date(2026, 1, 1), "open": 100, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 2), "open": 100, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 3), "open": 100, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 4), "open": 100, "close": 100},
+            ],
+        )
+        upsert_market_index_prices(
+            session,
+            [
+                {"symbol": "NASDAQ", "date": date(2026, 1, 1), "close": 100.0},
+                {"symbol": "NASDAQ", "date": date(2026, 1, 2), "close": 97.0},
+                {"symbol": "SP500", "date": date(2026, 1, 1), "close": 100.0},
+                {"symbol": "SP500", "date": date(2026, 1, 2), "close": 98.4},
+                {"symbol": "DOW", "date": date(2026, 1, 1), "close": 100.0},
+                {"symbol": "DOW", "date": date(2026, 1, 2), "close": 99.0},
+            ],
+        )
+
+    def score_aaa(_engine, *, as_of_date, lookback_days=None):
+        return [FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 10.0, 1)]
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 4),
+        scoring_func=score_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+        rebalance_frequency="daily",
+        max_position_weight=1.0,
+        enable_market_risk_overlay=False,
+        enable_macro_risk_overlay=True,
+    )
+
+    assert any(
+        trade.side == "SELL" and trade.reason == "macro_risk_reduce"
+        for trade in result.trades
+    )
+
+
+def test_inverse_etf_hedge_buys_on_risk_off_when_enabled():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_stocks(
+            session,
+            [
+                {"ticker": "AAA", "name": "AAA", "market": "KOSPI"},
+                {"ticker": "INV1", "name": "Inverse 1x", "market": "ETF", "instrument_type": "ETF"},
+                {"ticker": "INV2", "name": "Inverse 2x", "market": "ETF", "instrument_type": "ETF"},
+            ],
+        )
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "AAA", "date": date(2026, 1, 1), "open": 100, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 2), "open": 100, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 3), "open": 100, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 4), "open": 100, "close": 100},
+                {"ticker": "INV1", "date": date(2026, 1, 3), "open": 100, "close": 100},
+                {"ticker": "INV1", "date": date(2026, 1, 4), "open": 101, "close": 101},
+                {"ticker": "INV2", "date": date(2026, 1, 3), "open": 100, "close": 100},
+                {"ticker": "INV2", "date": date(2026, 1, 4), "open": 102, "close": 102},
+            ],
+        )
+        upsert_market_index_prices(
+            session,
+            [
+                {"symbol": "NASDAQ", "date": date(2026, 1, 1), "close": 100.0},
+                {"symbol": "NASDAQ", "date": date(2026, 1, 2), "close": 94.0},
+            ],
+        )
+
+    def scoring_func(_engine, *, as_of_date):
+        return [FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 10.0, 1)]
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 4),
+        scoring_func=scoring_func,
+        top_n=1,
+        rebalance_frequency="daily",
+        enable_stops=False,
+        enable_market_risk_overlay=False,
+        enable_macro_risk_overlay=True,
+        enable_inverse_etf_hedge=True,
+        inverse_etf_allowed_tickers=("INV1", "INV2"),
+        inverse_etf_leveraged_tickers=("INV2",),
+    )
+
+    assert any(
+        trade.side == "BUY"
+        and trade.ticker == "INV2"
+        and trade.reason.startswith("inverse_etf_hedge_market_drop")
+        for trade in result.trades
+    )
+
+
+def test_inverse_etf_hedge_disabled_preserves_no_inverse_trades():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_stocks(
+            session,
+            [
+                {"ticker": "AAA", "name": "AAA", "market": "KOSPI"},
+                {"ticker": "INV1", "name": "Inverse 1x", "market": "ETF", "instrument_type": "ETF"},
+            ],
+        )
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "AAA", "date": date(2026, 1, 1), "open": 100, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 2), "open": 100, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 3), "open": 100, "close": 100},
+                {"ticker": "INV1", "date": date(2026, 1, 3), "open": 100, "close": 100},
+            ],
+        )
+        upsert_market_index_prices(
+            session,
+            [
+                {"symbol": "NASDAQ", "date": date(2026, 1, 1), "close": 100.0},
+                {"symbol": "NASDAQ", "date": date(2026, 1, 2), "close": 94.0},
+            ],
+        )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 3),
+        scoring_func=lambda _engine, *, as_of_date: [
+            FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 10.0, 1)
+        ],
+        top_n=1,
+        rebalance_frequency="daily",
+        enable_stops=False,
+        enable_market_risk_overlay=False,
+        enable_macro_risk_overlay=True,
+        enable_inverse_etf_hedge=False,
+        inverse_etf_allowed_tickers=("INV1",),
+    )
+
+    assert all(trade.ticker != "INV1" for trade in result.trades)
+

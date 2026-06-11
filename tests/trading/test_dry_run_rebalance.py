@@ -652,3 +652,217 @@ def test_run_scales_buy_weights_after_bond_yields_rise(tmp_path):
     assert payload["combined_buy_budget_multiplier"] == 0.7
     assert payload["targets"][0]["target_weight"] == 0.105
 
+
+def test_run_adds_macro_reduction_sell_when_us_market_risk_off(tmp_path, capsys):
+    import scripts.dry_run_rebalance as dry_run
+
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_market_index_prices(
+            session,
+            [
+                {"symbol": "NASDAQ", "date": date(2026, 5, 6), "close": 100.0},
+                {"symbol": "NASDAQ", "date": date(2026, 5, 7), "close": 97.0},
+                {"symbol": "SP500", "date": date(2026, 5, 6), "close": 100.0},
+                {"symbol": "SP500", "date": date(2026, 5, 7), "close": 98.4},
+                {"symbol": "DOW", "date": date(2026, 5, 6), "close": 100.0},
+                {"symbol": "DOW", "date": date(2026, 5, 7), "close": 99.0},
+            ],
+        )
+    client = _client()
+    client.get_balance.return_value = {
+        "rt_cd": "0",
+        "output1": [
+                {
+                    "pdno": "OLD",
+                    "prdt_name": "Old Holding",
+                    "hldg_qty": "9",
+                    "pchs_avg_pric": "10000",
+                    "prpr": "10000",
+                    "evlu_pfls_amt": "0",
+                    "evlu_pfls_rt": "0.0",
+                }
+            ],
+            "output2": [{"dnca_tot_amt": "10000"}],
+        }
+    report_path = tmp_path / "dry_run.json"
+    args = dry_run.parse_args([
+        "--as-of-date",
+        "2026-05-08",
+        "--top-n",
+        "1",
+        "--output-json",
+        str(report_path),
+    ])
+
+    result = dry_run.run(
+        args,
+        db_engine=engine,
+        client_factory=MagicMock(return_value=client),
+        score_func=MagicMock(return_value=[_score("OLD", 1)]),
+    )
+
+    output = capsys.readouterr().out
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert result == 0
+    assert "SELL,OLD,3,macro_risk_reduce" in output
+    assert payload["macro_exposure_adjustment"]["status"] == "risk_off"
+    assert payload["macro_exposure_adjustment"]["cash_target"] == 0.4
+    assert payload["macro_exposure_adjustment"]["orders_generated"] is True
+    assert payload["orders"] == [
+        {
+            "side": "SELL",
+            "ticker": "OLD",
+            "qty": 3,
+            "reason": "macro_risk_reduce to 40% cash target",
+        }
+    ]
+    client.place_order.assert_not_called()
+
+
+def test_run_adds_inverse_etf_hedge_buy_with_evidence(tmp_path, monkeypatch, capsys):
+    import scripts.dry_run_rebalance as dry_run
+    from config import InverseEtfHedgeConfig
+
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "OLD", "date": date(2026, 5, 7), "close": 10000},
+                {"ticker": "OLD", "date": date(2026, 5, 8), "close": 10000},
+            ],
+        )
+        upsert_market_index_prices(
+            session,
+            [
+                {"symbol": "NASDAQ", "date": date(2026, 5, 6), "close": 100.0},
+                {"symbol": "NASDAQ", "date": date(2026, 5, 7), "close": 94.0},
+            ],
+        )
+    monkeypatch.setattr(
+        dry_run,
+        "INVERSE_ETF",
+        InverseEtfHedgeConfig(
+            allowed_tickers=("INV1", "INV2"),
+            leveraged_tickers=("INV2",),
+        ),
+    )
+    client = _client()
+    client.get_balance.return_value = {
+        "rt_cd": "0",
+        "output1": [
+            {
+                "pdno": "OLD",
+                "prdt_name": "Old Holding",
+                "hldg_qty": "900",
+                "pchs_avg_pric": "10000",
+                "prpr": "10000",
+                "evlu_pfls_amt": "0",
+                "evlu_pfls_rt": "0.0",
+            }
+        ],
+        "output2": [{"dnca_tot_amt": "1000000"}],
+    }
+    client.get_current_price.side_effect = [
+        {"rt_cd": "0", "output": {"stck_prpr": "10000"}},
+        {"rt_cd": "0", "output": {"stck_prpr": "5000"}},
+    ]
+    report_path = tmp_path / "dry_run.json"
+    md_path = tmp_path / "dry_run.md"
+    args = dry_run.parse_args([
+        "--as-of-date",
+        "2026-05-08",
+        "--top-n",
+        "1",
+        "--output-json",
+        str(report_path),
+        "--output-md",
+        str(md_path),
+    ])
+
+    result = dry_run.run(
+        args,
+        db_engine=engine,
+        client_factory=MagicMock(return_value=client),
+        score_func=MagicMock(return_value=[_score("OLD", 1)]),
+    )
+
+    output = capsys.readouterr().out
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    report = md_path.read_text(encoding="utf-8")
+
+    assert result == 0
+    assert "BUY,INV1" in output
+    assert "BUY,INV2" in output
+    assert payload["inverse_etf_hedge"]["status"] == "hedge_on"
+    assert payload["inverse_etf_hedge"]["target_weights"] == {"INV1": 0.07, "INV2": 0.03}
+    assert payload["inverse_etf_hedge"]["orders_generated"] is True
+    assert payload["inverse_etf_hedge"]["evidence"][0]["reason"] == "inverse_etf_hedge_market_drop"
+    assert "## Inverse ETF Hedge" in report
+    client.place_order.assert_not_called()
+
+
+def test_run_sells_inverse_etf_when_hedge_risk_clears(tmp_path, monkeypatch, capsys):
+    import scripts.dry_run_rebalance as dry_run
+    from config import InverseEtfHedgeConfig
+
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    monkeypatch.setattr(
+        dry_run,
+        "INVERSE_ETF",
+        InverseEtfHedgeConfig(
+            allowed_tickers=("INV1", "INV2"),
+            leveraged_tickers=("INV2",),
+        ),
+    )
+    client = _client()
+    client.get_balance.return_value = {
+        "rt_cd": "0",
+        "output1": [
+            {
+                "pdno": "INV2",
+                "prdt_name": "Inverse 2x",
+                "hldg_qty": "10",
+                "pchs_avg_pric": "10000",
+                "prpr": "10100",
+                "evlu_pfls_amt": "1000",
+                "evlu_pfls_rt": "1.0",
+            }
+        ],
+        "output2": [{"dnca_tot_amt": "100000"}],
+    }
+    exit_state_path = tmp_path / "exit_state.json"
+    _write_exit_state(exit_state_path, ticker="INV2", entry_date="2026-05-07")
+    report_path = tmp_path / "dry_run.json"
+    args = dry_run.parse_args([
+        "--as-of-date",
+        "2026-05-08",
+        "--top-n",
+        "1",
+        "--output-json",
+        str(report_path),
+        "--exit-state-path",
+        str(exit_state_path),
+    ])
+
+    result = dry_run.run(
+        args,
+        db_engine=engine,
+        client_factory=MagicMock(return_value=client),
+        score_func=MagicMock(return_value=[_score("INV2", 1)]),
+    )
+
+    output = capsys.readouterr().out
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert result == 0
+    assert "SELL,INV2,10,inverse_etf_hedge_risk_cleared" in output
+    assert payload["inverse_etf_hedge"]["status"] == "hedge_off"
+    assert payload["sell_count"] == 1
+    client.place_order.assert_not_called()
+

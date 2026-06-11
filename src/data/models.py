@@ -58,6 +58,31 @@ class MarketIndexPrice(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class MacroIndicatorRelease(Base):
+    __tablename__ = "macro_indicator_releases"
+    __table_args__ = (
+        UniqueConstraint(
+            "indicator",
+            "period_date",
+            "release_date",
+            name="uq_macro_indicator_period_release",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    indicator: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    period_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    release_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    previous_value: Mapped[float | None] = mapped_column(Float)
+    unit: Mapped[str | None] = mapped_column(String(40))
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    impact_rule: Mapped[str] = mapped_column(String(40), nullable=False)
+    importance: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class Fundamental(Base):
     __tablename__ = "fundamentals"
     __table_args__ = (UniqueConstraint("ticker", "date", name="uq_fundamentals_ticker_date"),)

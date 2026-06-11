@@ -13,6 +13,7 @@ from src.data.models import (
     DailyPrice,
     Fundamental,
     InvestorFlow,
+    MacroIndicatorRelease,
     MarketIndexPrice,
     QualityMetric,
     ResearchReportAnalysis,
@@ -114,6 +115,56 @@ def upsert_market_index_prices(session: Session, rows: Iterable[dict[str, Any]])
         conflict_columns=["symbol", "date"],
         update_columns=["open", "high", "low", "close", "volume"],
     )
+
+
+def upsert_macro_indicator_releases(session: Session, rows: Iterable[dict[str, Any]]) -> int:
+    return _upsert_many(
+        session,
+        MacroIndicatorRelease,
+        rows,
+        conflict_columns=["indicator", "period_date", "release_date"],
+        update_columns=[
+            "value",
+            "previous_value",
+            "unit",
+            "source",
+            "source_url",
+            "impact_rule",
+            "importance",
+        ],
+    )
+
+
+def get_recent_macro_indicator_releases(
+    session: Session,
+    as_of_date: date,
+    *,
+    lookback_days: int = 14,
+) -> list[dict[str, Any]]:
+    start_date = as_of_date - timedelta(days=lookback_days)
+    rows = session.scalars(
+        select(MacroIndicatorRelease)
+        .where(
+            MacroIndicatorRelease.release_date >= start_date,
+            MacroIndicatorRelease.release_date <= as_of_date,
+        )
+        .order_by(MacroIndicatorRelease.release_date, MacroIndicatorRelease.indicator)
+    ).all()
+    return [
+        {
+            "indicator": row.indicator,
+            "period_date": row.period_date,
+            "release_date": row.release_date,
+            "value": row.value,
+            "previous_value": row.previous_value,
+            "unit": row.unit,
+            "source": row.source,
+            "source_url": row.source_url,
+            "impact_rule": row.impact_rule,
+            "importance": row.importance,
+        }
+        for row in rows
+    ]
 
 
 def upsert_fundamentals(session: Session, rows: Iterable[dict[str, Any]]) -> int:

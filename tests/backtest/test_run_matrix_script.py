@@ -34,6 +34,12 @@ def test_parse_args_accepts_matrix_options():
             "5000000",
             "--database-url",
             "sqlite:///:memory:",
+            "--no-enable-macro-risk-overlay",
+            "--enable-inverse-etf-hedge",
+            "--inverse-etf-allowed-tickers",
+            "INV1,INV2",
+            "--inverse-etf-leveraged-tickers",
+            "INV2",
         ]
     )
 
@@ -50,6 +56,10 @@ def test_parse_args_accepts_matrix_options():
     assert args.slippage_rate == 0.004
     assert args.initial_capital == 5_000_000
     assert args.database_url == "sqlite:///:memory:"
+    assert args.enable_macro_risk_overlay is False
+    assert args.enable_inverse_etf_hedge is True
+    assert args.inverse_etf_allowed_tickers == ("INV1", "INV2")
+    assert args.inverse_etf_leveraged_tickers == ("INV2",)
 
 
 def test_run_prints_one_row_per_matrix_scenario(capsys):
@@ -98,6 +108,12 @@ def test_run_prints_one_row_per_matrix_scenario(capsys):
             "10000",
             "--database-url",
             "sqlite:///:memory:",
+            "--no-enable-macro-risk-overlay",
+            "--enable-inverse-etf-hedge",
+            "--inverse-etf-allowed-tickers",
+            "INV1,INV2",
+            "--inverse-etf-leveraged-tickers",
+            "INV2",
         ]
     )
 
@@ -114,6 +130,10 @@ def test_run_prints_one_row_per_matrix_scenario(capsys):
     assert calls[0]["tax_rate_kospi"] == COST.tax_rate_kospi
     assert calls[0]["tax_rate_kosdaq"] == COST.tax_rate_kosdaq
     assert calls[0]["slippage_rate"] == COST.slippage_rate
+    assert calls[0]["enable_macro_risk_overlay"] is False
+    assert calls[0]["enable_inverse_etf_hedge"] is True
+    assert calls[0]["inverse_etf_allowed_tickers"] == ("INV1", "INV2")
+    assert calls[0]["inverse_etf_leveraged_tickers"] == ("INV2",)
     assert calls[1]["enable_stops"] is False
     assert calls[2]["commission_rate"] == 0.0
     assert calls[2]["tax_rate_kospi"] == 0.0

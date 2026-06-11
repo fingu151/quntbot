@@ -20,6 +20,10 @@ from dotenv import load_dotenv
 # .env ?먮룞 濡쒕뱶 (?놁뼱???먮윭 ????
 load_dotenv()
 
+
+def _csv_tuple(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
 # =============================================================================
 # 寃쎈줈
 # =============================================================================
@@ -263,6 +267,61 @@ class MarketRiskConfig:
 
 MARKET_RISK = MarketRiskConfig()
 
+
+@dataclass(frozen=True)
+class MacroRiskConfig:
+    enable_overlay: bool = True
+    moderate_cash_target: float = 0.20
+    severe_cash_target: float = 0.40
+    max_cash_target: float = 0.50
+    risk_on_buy_multiplier: float = 1.10
+    severe_risk_on_buy_multiplier: float = 1.20
+    intraday_dry_run_only: bool = True
+    fred_api_key: str = os.getenv("FRED_API_KEY", "")
+
+
+MACRO_RISK = MacroRiskConfig()
+
+
+@dataclass(frozen=True)
+class InverseEtfHedgeConfig:
+    enabled: bool = os.getenv("INVERSE_ETF_HEDGE_ENABLED", "true").lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+    allowed_tickers: tuple[str, ...] = field(
+        default_factory=lambda: _csv_tuple(os.getenv("INVERSE_ETF_ALLOWED_TICKERS", ""))
+    )
+    allow_leveraged: bool = os.getenv("INVERSE_ETF_ALLOW_LEVERAGED", "true").lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+    leveraged_tickers: tuple[str, ...] = field(
+        default_factory=lambda: _csv_tuple(os.getenv("INVERSE_ETF_LEVERAGED_TICKERS", ""))
+    )
+    max_total_weight: float = float(os.getenv("INVERSE_ETF_MAX_TOTAL_WEIGHT", "0.15"))
+    max_1x_weight: float = float(os.getenv("INVERSE_ETF_MAX_1X_WEIGHT", "0.10"))
+    max_2x_weight: float = float(os.getenv("INVERSE_ETF_MAX_2X_WEIGHT", "0.05"))
+    moderate_target_weight: float = float(os.getenv("INVERSE_ETF_MODERATE_TARGET_WEIGHT", "0.05"))
+    severe_target_weight: float = float(os.getenv("INVERSE_ETF_SEVERE_TARGET_WEIGHT", "0.10"))
+    severe_2x_target_weight: float = float(os.getenv("INVERSE_ETF_SEVERE_2X_TARGET_WEIGHT", "0.03"))
+    overbought_rsi_threshold: float = float(os.getenv("INVERSE_ETF_OVERBOUGHT_RSI_THRESHOLD", "75"))
+    severe_overbought_rsi_threshold: float = float(
+        os.getenv("INVERSE_ETF_SEVERE_OVERBOUGHT_RSI_THRESHOLD", "80")
+    )
+    market_drop_threshold: float = float(os.getenv("INVERSE_ETF_MARKET_DROP_THRESHOLD", "-0.03"))
+    severe_market_drop_threshold: float = float(
+        os.getenv("INVERSE_ETF_SEVERE_MARKET_DROP_THRESHOLD", "-0.05")
+    )
+    max_holding_days: int = int(os.getenv("INVERSE_ETF_MAX_HOLDING_DAYS", "10"))
+    stop_loss_pct: float = float(os.getenv("INVERSE_ETF_STOP_LOSS_PCT", "-0.07"))
+    take_profit_pct: float = float(os.getenv("INVERSE_ETF_TAKE_PROFIT_PCT", "0.12"))
+
+
+INVERSE_ETF = InverseEtfHedgeConfig()
+
 # =============================================================================
 # 由щ갭?곗떛 ?ㅼ?以?
 # =============================================================================
@@ -404,6 +463,39 @@ def validate() -> list[str]:
         value = getattr(MARKET_RISK, name)
         if not 0 <= value <= 1:
             warnings.append(f"MARKET_RISK.{name} must be between 0 and 1.")
+    for name in ("moderate_cash_target", "severe_cash_target", "max_cash_target"):
+        value = getattr(MACRO_RISK, name)
+        if not 0 <= value <= 1:
+            warnings.append(f"MACRO_RISK.{name} must be between 0 and 1.")
+    if MACRO_RISK.moderate_cash_target > MACRO_RISK.severe_cash_target:
+        warnings.append("MACRO_RISK.moderate_cash_target must be <= severe_cash_target.")
+    if MACRO_RISK.severe_cash_target > MACRO_RISK.max_cash_target:
+        warnings.append("MACRO_RISK.severe_cash_target must be <= max_cash_target.")
+    if MACRO_RISK.risk_on_buy_multiplier <= 0 or MACRO_RISK.severe_risk_on_buy_multiplier <= 0:
+        warnings.append("MACRO_RISK buy multipliers must be positive.")
+    for name in (
+        "max_total_weight",
+        "max_1x_weight",
+        "max_2x_weight",
+        "moderate_target_weight",
+        "severe_target_weight",
+        "severe_2x_target_weight",
+    ):
+        value = getattr(INVERSE_ETF, name)
+        if not 0 <= value <= 1:
+            warnings.append(f"INVERSE_ETF.{name} must be between 0 and 1.")
+    if INVERSE_ETF.max_1x_weight + INVERSE_ETF.max_2x_weight > INVERSE_ETF.max_total_weight + 1e-9:
+        warnings.append("INVERSE_ETF 1x/2x caps must not exceed max_total_weight.")
+    if INVERSE_ETF.severe_2x_target_weight > INVERSE_ETF.max_2x_weight:
+        warnings.append("INVERSE_ETF.severe_2x_target_weight must be <= max_2x_weight.")
+    if INVERSE_ETF.market_drop_threshold < INVERSE_ETF.severe_market_drop_threshold:
+        warnings.append("INVERSE_ETF.market_drop_threshold must be >= severe_market_drop_threshold.")
+    if INVERSE_ETF.max_holding_days <= 0:
+        warnings.append("INVERSE_ETF.max_holding_days must be greater than 0.")
+    if INVERSE_ETF.stop_loss_pct >= 0:
+        warnings.append("INVERSE_ETF.stop_loss_pct must be negative.")
+    if INVERSE_ETF.take_profit_pct <= 0:
+        warnings.append("INVERSE_ETF.take_profit_pct must be positive.")
     if MARKET_RISK.rsi_window <= 0:
         warnings.append("MARKET_RISK.rsi_window must be greater than 0.")
     if MARKET_RISK.nasdaq_severe_drop_pct > MARKET_RISK.nasdaq_moderate_drop_pct:
@@ -435,6 +527,8 @@ if __name__ == "__main__":
         "PORTFOLIO": {**PORTFOLIO.__dict__, "per_position_cash": PORTFOLIO.per_position_cash},
         "EXIT_RULES": EXIT_RULES.__dict__,
         "MARKET_RISK": MARKET_RISK.__dict__,
+        "MACRO_RISK": MACRO_RISK.__dict__,
+        "INVERSE_ETF": INVERSE_ETF.__dict__,
         "REBALANCE": REBALANCE.__dict__,
         "SAFETY": SAFETY.__dict__,
         "COST": COST.__dict__,

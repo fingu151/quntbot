@@ -22,6 +22,12 @@ def test_parse_args_accepts_backtest_options():
             "5000000",
             "--database-url",
             "sqlite:///:memory:",
+            "--no-enable-macro-risk-overlay",
+            "--enable-inverse-etf-hedge",
+            "--inverse-etf-allowed-tickers",
+            "INV1,INV2",
+            "--inverse-etf-leveraged-tickers",
+            "INV2",
         ]
     )
 
@@ -32,6 +38,10 @@ def test_parse_args_accepts_backtest_options():
     assert args.database_url == "sqlite:///:memory:"
     assert args.enable_stops is True
     assert args.rebalance_frequency == "weekly"
+    assert args.enable_macro_risk_overlay is False
+    assert args.enable_inverse_etf_hedge is True
+    assert args.inverse_etf_allowed_tickers == ("INV1", "INV2")
+    assert args.inverse_etf_leveraged_tickers == ("INV2",)
 
 
 def test_parse_args_accepts_disable_stops():
@@ -389,6 +399,43 @@ def test_run_passes_cost_overrides_to_backtest():
     assert captured_kwargs["slippage_rate"] == 0.004
 
 
+def test_run_passes_inverse_etf_hedge_options_to_backtest():
+    captured_kwargs = {}
+
+    def fake_run_backtest(engine, **kwargs):
+        captured_kwargs.update(kwargs)
+        return BacktestResult(
+            initial_capital=10_000,
+            final_equity=10_000,
+            total_return=0.0,
+            cagr=0.0,
+            max_drawdown=0.0,
+            sharpe_ratio=0.0,
+            win_rate=0.0,
+            average_holding_days=0.0,
+            trades=[],
+            equity_curve=[],
+        )
+
+    args = parse_args(
+        [
+            "--database-url",
+            "sqlite:///:memory:",
+            "--enable-inverse-etf-hedge",
+            "--inverse-etf-allowed-tickers",
+            "INV1,INV2",
+            "--inverse-etf-leveraged-tickers",
+            "INV2",
+        ]
+    )
+
+    run(args, run_backtest_func=fake_run_backtest)
+
+    assert captured_kwargs["enable_inverse_etf_hedge"] is True
+    assert captured_kwargs["inverse_etf_allowed_tickers"] == ("INV1", "INV2")
+    assert captured_kwargs["inverse_etf_leveraged_tickers"] == ("INV2",)
+
+
 def test_matrix_parse_args_accepts_staged_exit_rebalance_and_weighting_options():
     args = matrix_script.parse_args(
         [
@@ -519,3 +566,4 @@ def test_script_can_be_executed_directly_with_help():
     assert "--max-position-weight" in completed.stdout
     assert "--commission-rate" in completed.stdout
     assert "--slippage-rate" in completed.stdout
+    assert "--enable-inverse-etf-hedge" in completed.stdout

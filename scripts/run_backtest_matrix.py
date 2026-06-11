@@ -10,7 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from config import BACKTEST, COST, EXIT_RULES, MARKET_RISK, PORTFOLIO, REBALANCE
+from config import BACKTEST, COST, EXIT_RULES, INVERSE_ETF, MACRO_RISK, MARKET_RISK, PORTFOLIO, REBALANCE
 from src.backtest.engine import run_backtest
 from src.backtest.models import BacktestResult
 from src.data.database import create_tables, get_engine
@@ -65,6 +65,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--enable-market-risk-overlay",
         action=argparse.BooleanOptionalAction,
         default=MARKET_RISK.enable_overlay,
+    )
+    parser.add_argument(
+        "--enable-macro-risk-overlay",
+        action=argparse.BooleanOptionalAction,
+        default=MACRO_RISK.enable_overlay,
+    )
+    parser.add_argument(
+        "--enable-inverse-etf-hedge",
+        action=argparse.BooleanOptionalAction,
+        default=INVERSE_ETF.enabled,
+    )
+    parser.add_argument(
+        "--inverse-etf-allowed-tickers",
+        type=_parse_ticker_tuple,
+        default=INVERSE_ETF.allowed_tickers,
+    )
+    parser.add_argument(
+        "--inverse-etf-leveraged-tickers",
+        type=_parse_ticker_tuple,
+        default=INVERSE_ETF.leveraged_tickers,
     )
     parser.add_argument("--market-risk-rsi-window", type=int, default=MARKET_RISK.rsi_window)
     parser.add_argument("--market-risk-rsi-threshold", type=float, default=MARKET_RISK.rsi_overheat_threshold)
@@ -189,6 +209,10 @@ def run(
                         min_position_weight=args.min_position_weight,
                         max_position_weight=args.max_position_weight,
                         enable_market_risk_overlay=args.enable_market_risk_overlay,
+                        enable_macro_risk_overlay=args.enable_macro_risk_overlay,
+                        enable_inverse_etf_hedge=args.enable_inverse_etf_hedge,
+                        inverse_etf_allowed_tickers=args.inverse_etf_allowed_tickers,
+                        inverse_etf_leveraged_tickers=args.inverse_etf_leveraged_tickers,
                         market_risk_rsi_window=args.market_risk_rsi_window,
                         market_risk_rsi_threshold=args.market_risk_rsi_threshold,
                         one_market_overheat_cash_target=args.one_market_overheat_cash_target,
@@ -236,6 +260,10 @@ def _parse_rebalance_frequencies(value: str) -> list[str]:
     if not parsed or invalid:
         raise argparse.ArgumentTypeError("must contain only daily, weekly, or monthly")
     return parsed
+
+
+def _parse_ticker_tuple(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def _parse_cost_scenarios(value: str) -> list[str]:

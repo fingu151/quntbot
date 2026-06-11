@@ -10,7 +10,7 @@ from typing import Any
 
 from loguru import logger
 
-from config import DATA_DIR, EXIT_RULES, SAFETY, ExitRulesConfig, SafetyConfig
+from config import DATA_DIR, EXIT_RULES, INVERSE_ETF, SAFETY, ExitRulesConfig, SafetyConfig
 from src.notify.notifier import TelegramNotifier
 from src.trading.exit_state import ExitStateStore
 from src.trading.kis_client import KisClient
@@ -34,6 +34,7 @@ class TradingEngine:
         daily_anchor_path: Path | None = None,
         exit_state_path: Path | None = None,
         atr_lookup: AtrLookup | None = None,
+        inverse_hedge_tickers: set[str] | None = None,
     ) -> None:
         self._client = client
         self._safety = safety
@@ -50,6 +51,13 @@ class TradingEngine:
             exit_state_path or (DATA_DIR / "exit_state.json")
         )
         self._atr_lookup = atr_lookup
+        # 인버스 헤지 포지션은 헤지 모듈 규칙(-7%/+12%/보유일)으로만 청산한다.
+        # 일반 청산 규칙과 이중 관리되지 않도록 check_exit_rules에서 제외.
+        self._inverse_hedge_tickers = (
+            inverse_hedge_tickers
+            if inverse_hedge_tickers is not None
+            else set(INVERSE_ETF.allowed_tickers)
+        )
         self._peak_prices: dict[str, float] = {}  # {ticker: 보유 후 최고가}
 
     # ------------------------------------------------------------------
@@ -306,6 +314,9 @@ class TradingEngine:
                 qty=qty,
                 entry_date=self._today.isoformat(),
             )
+            if ticker in self._inverse_hedge_tickers:
+                # 진입일 기록(헤지 보유일 계산용)만 남기고 청산 판단은 헤지 모듈이 한다.
+                continue
             pnl_rate = (current / avg) - 1.0
 
             atr = self._get_atr(ticker) if not state.profit_take_done else None

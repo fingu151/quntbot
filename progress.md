@@ -1,5 +1,37 @@
 # quntbot Progress Log
 
+## 2026-06-11 US macro exposure overlay
+
+### Completed
+
+- Added a unified macro exposure overlay that combines US index moves, bond
+  yield moves, and official macro indicator release rows into one portfolio
+  exposure adjustment.
+- Added `MacroRiskConfig` defaults and `macro_indicator_releases` storage for
+  CPI/Core CPI, labor, and rate-policy release data.
+- Added `scripts/sync_macro_indicators.py` for FRED-backed official macro data
+  sync. Without `FRED_API_KEY`, the fetcher returns no rows and the macro layer
+  records missing source status instead of blocking orders.
+- Added macro risk reduction orders that can proportionally reduce current
+  holdings to a target cash ratio without duplicating existing rebalance sells.
+- Wired macro adjustment into dry-run rebalance reports, scheduler rebalance
+  order matching, intraday macro dry-run reports, and backtests.
+- Added `scripts/run_intraday_macro_risk_dry_run.py`; it writes reduction
+  candidates only and never submits PAPER/LIVE orders.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\trading tests\backtest tests\data -q`
+  -> `371 passed`.
+- `.\venv\Scripts\python.exe -m compileall config.py src scripts tests`
+  -> passed.
+- `.\venv\Scripts\python.exe -m pytest tests -q`
+  -> `649 passed`.
+- `.\venv\Scripts\python.exe scripts\check_rebalance_readiness.py`
+  -> blocked safely with `execution_ready=false`; preflight was clean, but
+  market time was outside weekday 09:00-15:20 KST.
+
 ## 2026-06-11 Quntbot improvement roadmap implementation slice
 
 ### Completed
@@ -3991,3 +4023,22 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 ### Next
 
 - Fix Telegram chat permission before Monday: start a private chat with the bot or add the bot to the target group/channel, then verify `TELEGRAM_CHAT_ID` points to that chat and rerun `scripts\smoke_test_telegram.py`.
+
+## 2026-06-12 Inverse ETF hedge overlay
+
+### Completed
+
+- Added an inverse ETF hedge layer that only trades configured `INVERSE_ETF_ALLOWED_TICKERS`.
+- 1x and 2x inverse ETFs are both supported; 2x tickers must also be listed in `INVERSE_ETF_LEVERAGED_TICKERS`.
+- Default caps are conservative: total inverse ETF weight `15%`, 1x cap `10%`, 2x cap `5%`, severe 2x target `3%`.
+- Buy evidence comes from market drops, severe overbought RSI, or existing macro risk-off signals.
+- Sell evidence covers risk cleared, stop loss, take profit, max holding days, and target trims.
+- Dry-run JSON/Markdown reports now include an `inverse_etf_hedge` section with selected tickers, target weights, evidence, skipped items, and generated orders.
+- Scheduler rebalance order calculation now includes the same inverse ETF hedge orders so dry-run preflight order matching remains intact.
+- Backtest engine supports `enable_inverse_etf_hedge`, `inverse_etf_allowed_tickers`, and `inverse_etf_leveraged_tickers`.
+
+### Safety Notes
+
+- No LIVE auto-execution path was added.
+- New inverse ETF orders still go through the existing dry-run report, stale report, price lookup, order match, daily order limit, and readiness gates.
+- With an empty inverse ETF whitelist, no inverse ETF orders are generated.

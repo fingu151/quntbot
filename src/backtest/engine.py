@@ -9,7 +9,17 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import Engine, select
 
-from config import COST, EXIT_RULES, FACTOR, MARKET_RISK, PORTFOLIO, REBALANCE
+from config import (
+    COST,
+    EXIT_RULES,
+    FACTOR,
+    INVERSE_ETF,
+    MACRO_RISK,
+    MARKET_RISK,
+    PORTFOLIO,
+    REBALANCE,
+    InverseEtfHedgeConfig,
+)
 from src.backtest.metrics import (
     average_holding_days,
     calculate_cagr,
@@ -29,6 +39,11 @@ from src.factors.engine import (
 )
 from src.factors.models import FactorScore
 from src.trading.allocation import compute_score_weights
+from src.trading.inverse_etf_hedge import (
+    calculate_inverse_etf_signal,
+    compute_inverse_etf_orders,
+)
+from src.trading.macro_risk import load_macro_exposure_adjustment
 from src.trading.rebalancer import is_execution_gap_too_large
 
 
@@ -72,6 +87,10 @@ def run_backtest(
     nasdaq_severe_drop_pct: float = MARKET_RISK.nasdaq_severe_drop_pct,
     nasdaq_moderate_cash_target: float = MARKET_RISK.nasdaq_moderate_cash_target,
     nasdaq_severe_cash_target: float = MARKET_RISK.nasdaq_severe_cash_target,
+    enable_macro_risk_overlay: bool = MACRO_RISK.enable_overlay,
+    enable_inverse_etf_hedge: bool = INVERSE_ETF.enabled,
+    inverse_etf_allowed_tickers: tuple[str, ...] = INVERSE_ETF.allowed_tickers,
+    inverse_etf_leveraged_tickers: tuple[str, ...] = INVERSE_ETF.leveraged_tickers,
 ) -> BacktestResult:
     # 기본 스코어러는 날짜마다 DB를 재쿼리해서 매우 느림.
     # 벌크 로딩 클로저로 교체하면 동일한 결과를 훨씬 빠르게 얻음.
@@ -89,7 +108,37 @@ def run_backtest(
     prices_by_date = _group_prices_by_date(prices)
     index_prices = _load_market_index_prices(engine, end_date=end_date)
     markets = _load_markets(engine)
+    inverse_config = InverseEtfHedgeConfig(
+        enabled=enable_inverse_etf_hedge,
+        allowed_tickers=inverse_etf_allowed_tickers,
+        allow_leveraged=INVERSE_ETF.allow_leveraged,
+        leveraged_tickers=inverse_etf_leveraged_tickers,
+        max_total_weight=INVERSE_ETF.max_total_weight,
+        max_1x_weight=INVERSE_ETF.max_1x_weight,
+        max_2x_weight=INVERSE_ETF.max_2x_weight,
+        moderate_target_weight=INVERSE_ETF.moderate_target_weight,
+        severe_target_weight=INVERSE_ETF.severe_target_weight,
+        severe_2x_target_weight=INVERSE_ETF.severe_2x_target_weight,
+        overbought_rsi_threshold=INVERSE_ETF.overbought_rsi_threshold,
+        severe_overbought_rsi_threshold=INVERSE_ETF.severe_overbought_rsi_threshold,
+        market_drop_threshold=INVERSE_ETF.market_drop_threshold,
+        severe_market_drop_threshold=INVERSE_ETF.severe_market_drop_threshold,
+        max_holding_days=INVERSE_ETF.max_holding_days,
+        stop_loss_pct=INVERSE_ETF.stop_loss_pct,
+        take_profit_pct=INVERSE_ETF.take_profit_pct,
+    )
+    inverse_allowed = set(inverse_config.allowed_tickers)
     trading_dates = sorted(prices_by_date)
+
+    # 오버레이와 헤지가 같은 날짜로 매크로 상태를 두 번 조회하므로 날짜별로 캐시한다.
+    macro_adjustment_cache: dict[date, Any] = {}
+
+    def _macro_adjustment_for(target_date: date) -> Any:
+        if target_date not in macro_adjustment_cache:
+            macro_adjustment_cache[target_date] = load_macro_exposure_adjustment(
+                engine, as_of_date=target_date
+            )
+        return macro_adjustment_cache[target_date]
 
     cash = capital
     positions: dict[str, float] = {}
@@ -172,6 +221,8 @@ def run_backtest(
         target_scores: list[FactorScore] = []
         keep_tickers = set(target_tickers)
         risk_cash_target = 0.0
+        buy_budget_multiplier = 1.0
+        risk_reduce_reason = "market_risk_reduce"
         if should_rebalance and previous_trading_date is not None:
             if enable_market_risk_overlay:
                 risk_cash_target = _market_risk_cash_target(
@@ -186,6 +237,13 @@ def run_backtest(
                     nasdaq_moderate_cash_target=nasdaq_moderate_cash_target,
                     nasdaq_severe_cash_target=nasdaq_severe_cash_target,
                 )
+            if enable_macro_risk_overlay:
+                macro_adjustment = _macro_adjustment_for(previous_trading_date)
+                buy_budget_multiplier = macro_adjustment.buy_budget_multiplier
+                if macro_adjustment.cash_target >= risk_cash_target:
+                    risk_cash_target = macro_adjustment.cash_target
+                    if macro_adjustment.status == "risk_off":
+                        risk_reduce_reason = "macro_risk_reduce"
             previous_close_prices = {
                 ticker: price["close"]
                 for ticker, price in prices_by_date[previous_trading_date].items()
@@ -212,6 +270,7 @@ def run_backtest(
         for ticker in list(positions):
             if (
                 ticker not in keep_tickers
+                and ticker not in inverse_allowed
                 and ticker not in forbidden_today
                 and ticker in open_prices
             ):
@@ -262,13 +321,54 @@ def run_backtest(
                 tax_rate_kospi=tax_rate_kospi,
                 tax_rate_kosdaq=tax_rate_kosdaq,
                 slippage_rate=slippage_rate,
+                reason=risk_reduce_reason,
+                trades=trades,
+                closed_trade_returns=closed_trade_returns,
+                closed_holding_days=closed_holding_days,
+                excluded_tickers=inverse_allowed,
+            )
+
+        if enable_inverse_etf_hedge and previous_trading_date is not None and inverse_allowed:
+            inverse_signal = calculate_inverse_etf_signal(
+                as_of_date=previous_trading_date,
+                macro_adjustment=_macro_adjustment_for(previous_trading_date),
+                domestic_index_closes=_domestic_index_closes_until(
+                    index_prices,
+                    previous_trading_date,
+                ),
+                config=inverse_config,
+            )
+            cash = _apply_inverse_etf_orders(
+                positions=positions,
+                entry_dates=entry_dates,
+                entry_values=entry_values,
+                entry_prices=entry_prices,
+                peak_prices=peak_prices,
+                profit_taken=profit_taken,
+                trailing_bucket_qty=trailing_bucket_qty,
+                breakeven_bucket_qty=breakeven_bucket_qty,
+                open_prices=open_prices,
+                close_prices=close_prices,
+                markets=markets,
+                trade_date=trading_date,
+                cash=cash,
+                signal=inverse_signal,
+                config=inverse_config,
+                commission_rate=commission_rate,
+                tax_rate_kospi=tax_rate_kospi,
+                tax_rate_kosdaq=tax_rate_kosdaq,
+                slippage_rate=slippage_rate,
                 trades=trades,
                 closed_trade_returns=closed_trade_returns,
                 closed_holding_days=closed_holding_days,
             )
 
         equity_before_buys = cash + _positions_value(positions, close_prices)
-        investable_equity = equity_before_buys * max(0.0, 1.0 - risk_cash_target)
+        investable_equity = (
+            equity_before_buys
+            * max(0.0, 1.0 - risk_cash_target)
+            * max(0.0, buy_budget_multiplier)
+        )
         target_weights: dict[str, float] = {}
         if weighting == "score_weighted" and target_scores:
             target_weights = compute_score_weights(
@@ -312,6 +412,9 @@ def run_backtest(
 
         if enable_stops:
             for ticker in list(positions):
+                if ticker in inverse_allowed:
+                    # 인버스 헤지 포지션은 헤지 모듈 규칙으로만 청산한다 (이중 관리 방지).
+                    continue
                 if ticker not in close_prices:
                     continue
                 close = close_prices[ticker]
@@ -528,6 +631,8 @@ def _reduce_to_cash_target(
     trades: list[BacktestTrade],
     closed_trade_returns: list[float],
     closed_holding_days: list[int],
+    reason: str = "market_risk_reduce",
+    excluded_tickers: set[str] | None = None,
 ) -> float:
     equity = cash + _positions_value(positions, close_prices)
     target_cash = equity * cash_target
@@ -540,8 +645,9 @@ def _reduce_to_cash_target(
         return cash
 
     sell_fraction = min(1.0, cash_needed / position_value)
+    excluded_tickers = excluded_tickers or set()
     for ticker in list(positions):
-        if ticker not in open_prices or ticker not in entry_dates:
+        if ticker in excluded_tickers or ticker not in open_prices or ticker not in entry_dates:
             continue
         current_quantity = positions[ticker]
         quantity = current_quantity * sell_fraction
@@ -561,7 +667,7 @@ def _reduce_to_cash_target(
             tax_rate_kospi=tax_rate_kospi,
             tax_rate_kosdaq=tax_rate_kosdaq,
             slippage_rate=slippage_rate,
-            reason="market_risk_reduce",
+            reason=reason,
         )
         trades.append(trade)
         closed_trade_returns.append(trade_return)
@@ -586,6 +692,125 @@ def _reduce_to_cash_target(
                 trailing_bucket_qty[ticker] *= 1.0 - sell_fraction
             if ticker in breakeven_bucket_qty:
                 breakeven_bucket_qty[ticker] *= 1.0 - sell_fraction
+    return cash
+
+
+def _apply_inverse_etf_orders(
+    *,
+    positions: dict[str, float],
+    entry_dates: dict[str, date],
+    entry_values: dict[str, float],
+    entry_prices: dict[str, float],
+    peak_prices: dict[str, float],
+    profit_taken: set[str],
+    trailing_bucket_qty: dict[str, float],
+    breakeven_bucket_qty: dict[str, float],
+    open_prices: dict[str, float],
+    close_prices: dict[str, float],
+    markets: dict[str, str],
+    trade_date: date,
+    cash: float,
+    signal: Any,
+    config: InverseEtfHedgeConfig,
+    commission_rate: float,
+    tax_rate_kospi: float,
+    tax_rate_kosdaq: float,
+    slippage_rate: float,
+    trades: list[BacktestTrade],
+    closed_trade_returns: list[float],
+    closed_holding_days: list[int],
+) -> float:
+    holdings = [
+        {
+            "ticker": ticker,
+            "qty": int(quantity),
+            "avg_price": entry_prices.get(ticker, 0.0),
+            "current_price": open_prices.get(ticker, close_prices.get(ticker, 0.0)),
+        }
+        for ticker, quantity in positions.items()
+        if ticker in config.allowed_tickers and quantity > 0
+    ]
+    portfolio_value = cash + _positions_value(positions, close_prices)
+    orders, _ = compute_inverse_etf_orders(
+        holdings=holdings,
+        prices=open_prices,
+        cash=cash,
+        portfolio_value=portfolio_value,
+        signal=signal,
+        entry_dates=entry_dates,
+        as_of_date=trade_date,
+        config=config,
+    )
+    for order in orders:
+        if order.ticker not in open_prices:
+            continue
+        price = open_prices[order.ticker]
+        if order.side == "SELL":
+            if order.ticker not in positions or order.ticker not in entry_dates:
+                continue
+            quantity = min(float(order.qty), positions[order.ticker])
+            if quantity <= 0:
+                continue
+            entry_value = entry_prices.get(order.ticker, 0.0) * quantity
+            cash, trade, trade_return, holding_days = _sell_position(
+                ticker=order.ticker,
+                quantity=quantity,
+                price=price,
+                trade_date=trade_date,
+                cash=cash,
+                market=markets.get(order.ticker, "ETF"),
+                entry_date=entry_dates[order.ticker],
+                entry_value=entry_value,
+                commission_rate=commission_rate,
+                tax_rate_kospi=tax_rate_kospi,
+                tax_rate_kosdaq=tax_rate_kosdaq,
+                slippage_rate=slippage_rate,
+                reason=order.reason,
+            )
+            trades.append(trade)
+            closed_trade_returns.append(trade_return)
+            closed_holding_days.append(holding_days)
+            remaining_quantity = positions[order.ticker] - quantity
+            if remaining_quantity <= 1e-9:
+                positions.pop(order.ticker, None)
+                entry_dates.pop(order.ticker, None)
+                entry_values.pop(order.ticker, None)
+                entry_prices.pop(order.ticker, None)
+                peak_prices.pop(order.ticker, None)
+                profit_taken.discard(order.ticker)
+                trailing_bucket_qty.pop(order.ticker, None)
+                breakeven_bucket_qty.pop(order.ticker, None)
+            else:
+                positions[order.ticker] = remaining_quantity
+                entry_values[order.ticker] = max(
+                    0.0,
+                    entry_values.get(order.ticker, 0.0) - entry_value,
+                )
+        elif order.side == "BUY":
+            quantity = float(order.qty)
+            gross_amount = quantity * price
+            cost = gross_amount * (commission_rate + slippage_rate)
+            total_cash_needed = gross_amount + cost
+            if quantity <= 0 or total_cash_needed > cash:
+                continue
+            cash -= total_cash_needed
+            positions[order.ticker] = positions.get(order.ticker, 0.0) + quantity
+            entry_dates[order.ticker] = trade_date
+            entry_values[order.ticker] = entry_values.get(order.ticker, 0.0) + gross_amount + cost
+            entry_prices[order.ticker] = entry_values[order.ticker] / positions[order.ticker]
+            peak_prices[order.ticker] = price
+            trades.append(
+                BacktestTrade(
+                    date=trade_date,
+                    ticker=order.ticker,
+                    side="BUY",
+                    quantity=quantity,
+                    price=price,
+                    gross_amount=gross_amount,
+                    cost=cost,
+                    reason=order.reason,
+                )
+            )
     return cash
 
 
@@ -688,6 +913,16 @@ def _market_risk_cash_target(
 
 def _index_closes_until(rows: list[dict[str, Any]], as_of_date: date) -> list[float]:
     return [float(row["close"]) for row in rows if row["date"] <= as_of_date and row["close"] > 0]
+
+
+def _domestic_index_closes_until(
+    index_prices: dict[str, list[dict[str, Any]]],
+    as_of_date: date,
+) -> dict[str, list[float]]:
+    return {
+        symbol: _index_closes_until(index_prices.get(symbol, []), as_of_date)
+        for symbol in ("KOSPI", "KOSDAQ")
+    }
 
 
 def _rsi_from_closes(closes: list[float], window: int) -> float | None:

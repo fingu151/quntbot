@@ -124,6 +124,29 @@ def test_check_exit_rules_full_stop_bypasses_daily_sell_limit(tmp_path):
     )
 
 
+def test_check_exit_rules_skips_inverse_hedge_tickers_but_records_entry(tmp_path):
+    """인버스 헤지 포지션은 일반 청산 규칙(-스톱/익절)에서 제외되고 진입일만 기록된다."""
+    engine = _make_engine(max_sells=3, stop_loss_pct=-0.05)
+    engine._exit_state_store = ExitStateStore(tmp_path / "exit_state.json")
+    engine._inverse_hedge_tickers = {"252670"}
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "252670",
+            "name": "KODEX 200선물인버스2X",
+            "qty": 10,
+            "avg_price": 3_000,
+            "current_price": 2_700,  # -10%: 일반 손절이면 발동하지만 헤지 모듈 담당
+        }
+    ]
+
+    triggered = engine.check_exit_rules()
+
+    assert triggered == []
+    engine._client.place_order.assert_not_called()
+    # 헤지 보유일 계산에 쓰일 진입일 기록은 남는다
+    assert "252670" in engine.get_exit_state_entry_dates()
+
+
 def test_counter_resets_on_new_day():
     """날짜가 바뀌면 일일 카운터와 halted 상태가 초기화된다."""
     engine = _make_engine(max_buys=1)

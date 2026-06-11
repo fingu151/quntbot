@@ -6,7 +6,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from config import PortfolioConfig
-from src.trading.rebalancer import RebalanceOrder, compute_rebalance_orders, execute_rebalance
+from src.trading.rebalancer import (
+    RebalanceOrder,
+    compute_macro_reduction_orders,
+    compute_rebalance_orders,
+    execute_rebalance,
+)
 
 
 def _portfolio(n: int = 3, enforce_price_filter: bool = True) -> PortfolioConfig:
@@ -215,6 +220,58 @@ def test_buy_budget_multiplier_scales_orders_without_exceeding_budget():
     )
 
     assert [(order.ticker, order.qty) for order in buys] == [("AAA", 6), ("BBB", 4)]
+
+
+def test_macro_reduction_sells_proportionally_to_reach_cash_target():
+    holdings = [
+        {"ticker": "AAA", "name": "AAA", "qty": 6, "current_price": 10},
+        {"ticker": "BBB", "name": "BBB", "qty": 3, "current_price": 10},
+    ]
+
+    sells, skipped = compute_macro_reduction_orders(
+        holdings=holdings,
+        prices={"AAA": 10, "BBB": 10},
+        cash=10,
+        target_cash_ratio=0.40,
+        existing_sells=[],
+    )
+
+    assert skipped == []
+    assert sells == [
+        RebalanceOrder("AAA", "SELL", 2, "macro_risk_reduce to 40% cash target"),
+        RebalanceOrder("BBB", "SELL", 1, "macro_risk_reduce to 40% cash target"),
+    ]
+
+
+def test_macro_reduction_skips_existing_sell_and_missing_price():
+    holdings = [
+        {"ticker": "AAA", "name": "AAA", "qty": 10, "current_price": 10},
+        {"ticker": "BBB", "name": "BBB", "qty": 10},
+    ]
+
+    sells, skipped = compute_macro_reduction_orders(
+        holdings=holdings,
+        prices={"AAA": 10},
+        cash=0,
+        target_cash_ratio=0.50,
+        existing_sells=[RebalanceOrder("AAA", "SELL", 10, "rebalance")],
+    )
+
+    assert sells == []
+    assert skipped == [{"ticker": "BBB", "reason": "missing_price"}]
+
+
+def test_macro_reduction_returns_no_orders_when_cash_target_already_met():
+    sells, skipped = compute_macro_reduction_orders(
+        holdings=[{"ticker": "AAA", "name": "AAA", "qty": 10, "current_price": 10}],
+        prices={"AAA": 10},
+        cash=100,
+        target_cash_ratio=0.50,
+        existing_sells=[],
+    )
+
+    assert sells == []
+    assert skipped == []
 
 
 # ------------------------------------------------------------------

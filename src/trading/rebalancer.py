@@ -123,6 +123,50 @@ def compute_rebalance_orders(
     return sells, buys
 
 
+def compute_macro_reduction_orders(
+    *,
+    holdings: list[dict[str, Any]],
+    prices: dict[str, int],
+    cash: int | float,
+    target_cash_ratio: float,
+    existing_sells: list[RebalanceOrder],
+) -> tuple[list[RebalanceOrder], list[dict[str, str]]]:
+    if target_cash_ratio <= 0:
+        return [], []
+
+    existing_sell_tickers = {order.ticker for order in existing_sells}
+    eligible: list[tuple[str, int, int]] = []
+    skipped: list[dict[str, str]] = []
+    position_value = 0.0
+    for holding in holdings:
+        ticker = str(holding.get("ticker", ""))
+        qty = int(holding.get("qty", 0) or 0)
+        if not ticker or qty <= 0 or ticker in existing_sell_tickers:
+            continue
+        price = int(prices.get(ticker) or holding.get("current_price") or 0)
+        if price <= 0:
+            skipped.append({"ticker": ticker, "reason": "missing_price"})
+            continue
+        eligible.append((ticker, qty, price))
+        position_value += qty * price
+
+    equity = float(cash) + position_value
+    if equity <= 0:
+        return [], skipped
+    target_cash = equity * min(max(target_cash_ratio, 0.0), 1.0)
+    cash_needed = target_cash - float(cash)
+    if cash_needed <= 0 or position_value <= 0:
+        return [], skipped
+
+    sell_fraction = min(1.0, cash_needed / position_value)
+    reason = f"macro_risk_reduce to {target_cash_ratio:.0%} cash target"
+    orders = [
+        RebalanceOrder(ticker, "SELL", math.floor(qty * sell_fraction), reason)
+        for ticker, qty, _ in eligible
+    ]
+    return [order for order in orders if order.qty > 0], skipped
+
+
 def is_execution_gap_too_large(
     *,
     execution_price: int | float,
