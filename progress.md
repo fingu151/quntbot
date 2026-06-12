@@ -4042,3 +4042,48 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 - No LIVE auto-execution path was added.
 - New inverse ETF orders still go through the existing dry-run report, stale report, price lookup, order match, daily order limit, and readiness gates.
 - With an empty inverse ETF whitelist, no inverse ETF orders are generated.
+
+## 2026-06-12 Review-fix verification evidence
+
+### Indicator threshold fixes validated on real FRED data (2020-01 ~ 2026-05)
+
+- CPI rule before fix (`delta >= 0.3` index points) fired 65/75 months (87%); CORE_CPI 69/75 (92%).
+  In 2024+ it fired 89%/93% of months, i.e. a near-permanent risk_off drag.
+- CPI rule after fix (m/m percent change >= 0.4%) fires 27/75 (36%) overall, 6/28 (21%) in 2024+;
+  CORE_CPI 18/75 (24%) overall, 1/28 (4%) in 2024+ - only genuinely hot months.
+- PAYEMS rule before fix (`delta <= -100_000` in thousands units = -100M jobs) fired 0 times,
+  including the COVID month of -20,469k. After fix (`<= -100`) it fires 5 times.
+
+### Market index data gap found and backfilled
+
+- `market_index_prices` had only KOSPI/KOSDAQ/NASDAQ (through 2026-05-18/19).
+  KR10Y/US10Y/SP500/DOW were entirely missing, so the bond-yield overlay had been
+  silently inactive. Backfilled all 7 symbols 2020-01-02 ~ 2026-06-11/12 (8,063 rows)
+  via `scripts/sync_market_indices.py`.
+
+### Backtest: macro overlay off vs on (2020-07-01 ~ 2026-05-18, top 20, weekly, custom costs)
+
+| metric | overlay off | overlay on |
+| --- | --- | --- |
+| total_return | +83.42% | +81.75% |
+| cagr | 10.86% | 10.69% |
+| max_drawdown | -16.08% | -15.58% |
+| sharpe_ratio | 1.1094 | 1.1854 |
+| win_rate | 61.59% | 60.74% |
+| trade_count | 898 | 889 |
+
+- Reports: `data/backtest_verify_macro_off.{csv,md}`, `data/backtest_verify_macro_on2.{csv,md}`.
+- Reading: the overlay gives up ~1.7%p of total return for a -0.5%p smaller drawdown and a
+  +6.9% higher Sharpe - the intended insurance trade-off, no longer a permanent drag.
+- Note: `macro_indicator_releases` was empty during these runs (FRED_API_KEY not set), so the
+  comparison measures the US-market + bond-yield overlay parts only.
+
+### Remaining setup before the macro indicator overlay is live
+
+- Get a free FRED API key (https://fred.stlouisfed.org/docs/api/api_key.html) and set
+  `FRED_API_KEY` in `.env`, then run
+  `python scripts/sync_macro_indicators.py --start-date 2020-01-01 --end-date <today>`
+  and confirm `release_date` values differ per period (vintage dates, not the sync date).
+- Set `INVERSE_ETF_ALLOWED_TICKERS` (and `INVERSE_ETF_LEVERAGED_TICKERS`) to enable the hedge.
+- Schedule `scripts/sync_market_indices.py` daily so index/bond inputs stay current;
+  the rebalance job now warns when macro inputs are missing.
