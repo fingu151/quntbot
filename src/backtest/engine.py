@@ -380,6 +380,10 @@ def run_backtest(
         for ticker in target_tickers:
             if ticker in positions:
                 continue
+            if ticker in inverse_allowed:
+                # 비리밸런스 날 target_tickers=list(positions) 폴백에 헤지 포지션이
+                # 들어오는데, 같은 날 헤지 매도 후 일반 매수로 되사면 안 된다.
+                continue
             price = open_prices[ticker]
             if target_weights:
                 target_value = investable_equity * target_weights.get(ticker, 0.0)

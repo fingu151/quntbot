@@ -248,6 +248,7 @@ def test_rebalance_job_includes_inverse_etf_hedge_orders_for_preflight_match(mon
         scheduler,
         "INVERSE_ETF",
         InverseEtfHedgeConfig(
+            enabled=True,
             allowed_tickers=("INV1", "INV2"),
             leveraged_tickers=("INV2",),
         ),

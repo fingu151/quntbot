@@ -26,6 +26,9 @@ def test_run_upserts_fake_macro_indicator_rows(tmp_path):
             "2026-01-31",
             "--database-url",
             database_url,
+            # 실행자의 .env(FRED_API_KEY)에 의존하지 않도록 명시
+            "--fred-api-key",
+            "",
         ]
     )
 

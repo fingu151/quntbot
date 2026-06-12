@@ -41,7 +41,9 @@ def _macro(
 
 
 def _config() -> InverseEtfHedgeConfig:
+    # enabled를 명시해 실행자의 .env(INVERSE_ETF_HEDGE_ENABLED)에 의존하지 않게 한다.
     return InverseEtfHedgeConfig(
+        enabled=True,
         allowed_tickers=("INV1", "INV2"),
         leveraged_tickers=("INV2",),
     )

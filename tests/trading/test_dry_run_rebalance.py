@@ -747,6 +747,7 @@ def test_run_adds_inverse_etf_hedge_buy_with_evidence(tmp_path, monkeypatch, cap
         dry_run,
         "INVERSE_ETF",
         InverseEtfHedgeConfig(
+            enabled=True,
             allowed_tickers=("INV1", "INV2"),
             leveraged_tickers=("INV2",),
         ),
@@ -816,6 +817,7 @@ def test_run_sells_inverse_etf_when_hedge_risk_clears(tmp_path, monkeypatch, cap
         dry_run,
         "INVERSE_ETF",
         InverseEtfHedgeConfig(
+            enabled=True,
             allowed_tickers=("INV1", "INV2"),
             leveraged_tickers=("INV2",),
         ),

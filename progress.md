@@ -4087,3 +4087,50 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 - Set `INVERSE_ETF_ALLOWED_TICKERS` (and `INVERSE_ETF_LEVERAGED_TICKERS`) to enable the hedge.
 - Schedule `scripts/sync_market_indices.py` daily so index/bond inputs stay current;
   the rebalance job now warns when macro inputs are missing.
+
+## 2026-06-12 Inverse ETF ticker setup + full-data verification
+
+### Configuration
+
+- `.env`: `INVERSE_ETF_ALLOWED_TICKERS=114800,252670` (KODEX inverse 1x / KODEX 200 futures inverse 2X,
+  both verified live via pykrx), `INVERSE_ETF_LEVERAGED_TICKERS=252670`.
+- `INVERSE_ETF_HEDGE_ENABLED=false` for now - backtest evidence below shows the default trigger set
+  destroys value; flip to true only after trigger tuning.
+- `.env.example` documents `FRED_API_KEY` and the inverse ETF keys.
+- Backfilled 114800/252670 daily prices 2020-01-02 ~ 2026-06-12 (1,581 rows each) so backtests can
+  trade the hedge.
+
+### FRED vintage fix verified with a real API key (382 rows, 2020-01 ~ 2026-06)
+
+- 0 rows have release_date equal to the sync day; 225 distinct release dates.
+- CPI 2026-05 -> released 2026-06-10; PAYEMS 2026-05 -> released 2026-06-05 (matches the real
+  BLS calendar); CPI publication lag distribution 37-44 days.
+- Second sync run kept row_count at 382 (idempotent; the old code would have duplicated rows daily).
+- Live dry-run with all three sources active: `missing_sources=[]`,
+  CPI +0.47% m/m flagged risk_off (cash 20%) while the US rally gave risk_on x1.2,
+  combining to multiplier 1.02 - the composite works as designed.
+
+### Backtest comparison, full inputs (2020-07-01 ~ 2026-05-18, top 20, weekly, custom costs)
+
+| scenario | total_return | cagr | mdd | sharpe | trades |
+| --- | --- | --- | --- | --- | --- |
+| overlay off | +83.42% | 10.86% | -16.08% | 1.1094 | 898 |
+| overlay on (no indicators) | +81.75% | 10.69% | -15.58% | 1.1854 | 889 |
+| overlay on (with indicators) | +77.06% | 10.20% | -15.38% | 1.1671 | 864 |
+| overlay + inverse hedge | +65.95% | 8.99% | -15.23% | 1.0475 | 1,648 |
+
+- Overlay: gives up return for smaller drawdowns and a better Sharpe - a defensible insurance trade.
+- Hedge with default triggers: -11.1%p return vs overlay-only for just -0.15%p MDD; direct hedge
+  trade P&L was -6.98M KRW over 245 entries. 59% of entries came from macro risk_off alone and
+  87% of exits were "risk_cleared" whipsaws. Keep disabled until triggers are tuned, e.g.:
+  (a) drop macro risk_off as a standalone entry trigger (require market-drop or RSI confluence),
+  (b) add entry/exit hysteresis (signal must persist 2 consecutive days),
+  (c) enter only on severe signals.
+
+### Bug found during verification and fixed
+
+- Backtest: on non-rebalance days `target_tickers = list(positions)` included hedge positions, so a
+  same-day hedge sell could be re-bought by the generic buy loop at full equal weight
+  (reason "rebalance"). Hedge tickers are now skipped in the generic buy loop.
+- Tests no longer depend on the runner's `.env`: inverse hedge test configs pass `enabled=True`
+  explicitly and the macro sync test passes `--fred-api-key ""`.
