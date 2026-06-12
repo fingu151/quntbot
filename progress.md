@@ -4134,3 +4134,49 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
   (reason "rebalance"). Hedge tickers are now skipped in the generic buy loop.
 - Tests no longer depend on the runner's `.env`: inverse hedge test configs pass `enabled=True`
   explicitly and the macro sync test passes `--fred-api-key ""`.
+
+## 2026-06-13 Strategy optimization sweep (17 backtests) and data-coverage discovery
+
+### Critical discovery: all prior backtests effectively traded 2024-05+ only
+
+- `quality_metrics` coverage starts at fiscal 2024 (published 2024-05-07+). For any earlier
+  as-of date the buy filter hits `quality_coverage_critical` and skips every buy.
+- Confirmed empirically: a 2024-01~2026-05 window run produced *identical* final equity to the
+  "2020-07~2026-05" runs. All full-window CAGR/Sharpe figures recorded before this date understate
+  the true annualized performance (e.g., top15 weekly is CAGR 31.3%, Sharpe 2.01 over the real
+  tradeable window) and none of them include the 2022 bear market.
+
+### Sweep results (effective window 2024-05~2026-05, custom costs, score_weighted unless noted)
+
+Concentration x frequency (Sharpe / MDD / total return):
+- weekly top10 1.164 / -15.27% / +98.3%; top15 1.267 / -15.34% / +90.9%;
+  top20 1.167 / -15.38% / +77.1%; top30 1.242 / -12.59% / +83.7%
+- monthly top15/20/30 all violate the -18% MDD constraint (-18.3% ~ -19.1%)
+
+Exit-rule variants on top15 weekly (baseline: ATR 2.2x + stop -7% + profit take +16%/45% + cooldown 3):
+- Baseline Sharpe 1.267 beat ALL variants: ATR off 1.159, ATR 3.0x 1.166, ATR 1.8x 1.207,
+  profit-take off 1.157 (+143.6% return but MDD -21.1%), PT +25%/50% 1.113 (MDD -18.7%),
+  PT +30%/33% 1.112 (MDD -19.4%), cooldown5+minhold2 1.196.
+- Equal weighting top15: +101.2% return but Sharpe 1.175 < score_weighted 1.267.
+
+### Decision
+
+- Keep the current configuration unchanged (top30 weekly, score_weighted, current exits).
+  The sweep validates it as locally optimal on every exit dimension tested.
+- top15 weekly is a promising candidate (higher Sharpe and return, worse MDD -15.3% vs -12.6%)
+  but switching concentration is deferred until it can be validated through the 2022 bear.
+- Profit-take removal is documented as a high-return/high-drawdown option (+143.6% / -21.1%),
+  rejected under the MDD <= -18% constraint.
+
+### Quality backfill attempts (for bear-market validation)
+
+- Full-FS sync (system python) died silently twice; root cause includes dart_fss being absent
+  from the system interpreter at first, then environment instability. Use `venv\Scripts\python.exe`.
+- `--single-account-only` via venv works: fiscal 2022 now has 355/739 tickers (1,374 metrics).
+  Note `--only-unsynced` skips tickers that have *any* rows (e.g. 2024) - omit it for backfills.
+- The 2020-2023 full run stalled at the DART corp-list download stage after ~2.5h (likely DART
+  daily-limit throttling after the day's usage) and was abandoned.
+- Next step when quota resets: rerun
+  `venv\Scripts\python.exe scripts\sync_phase1_quality.py --year-from 2020 --year-to 2023 --single-account-only`
+  (expect ~10 min per year when healthy), then re-run the top15-vs-top30 comparison over
+  2020-07~2026-05 and the 2021-07~2023-01 bear window before changing n_holdings.
