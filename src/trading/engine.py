@@ -247,6 +247,7 @@ class TradingEngine:
         Returns:
             True: 한도 초과(매매 중단), False: 정상
         """
+        self._reset_if_new_day()
         balance = self._client.get_balance()
         output2 = (balance.get("output2") or [{}])[0]
 

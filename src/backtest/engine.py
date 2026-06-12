@@ -424,7 +424,7 @@ def _make_fast_score_func(
             select(Fundamental).where(Fundamental.date <= end_date)
         ).all():
             fund_dates[row.ticker].append(row.date)
-            fund_data[row.ticker].append((row.per, row.pbr, row.eps, row.bps, row.div))
+            fund_data[row.ticker].append((row.per, row.pbr, row.eps, row.bps, row.div, row.dps))
         for row in session.scalars(
             select(QualityMetric).order_by(
                 QualityMetric.fiscal_year.desc(),
@@ -443,6 +443,18 @@ def _make_fast_score_func(
         fund_dates[ticker] = [p[0] for p in pairs]
         fund_data[ticker] = [p[1] for p in pairs]
 
+    def _latest_non_empty_fund_values(
+        rows: list[tuple[Any, ...]],
+        end_index: int,
+    ) -> tuple[Any, ...] | None:
+        # 실거래 경로의 _latest_non_empty_fundamental 과 동일하게
+        # 전부 None/0인 스냅샷은 건너뛰고 이전 유효 스냅샷으로 폴백한다.
+        for index in range(end_index - 1, -1, -1):
+            values = rows[index]
+            if any(value is not None and float(value) != 0.0 for value in values):
+                return values
+        return None
+
     def _scorer(_engine: Any, *, as_of_date: date, lookback_days: int = lookback_days) -> list[FactorScore]:
         rows = []
         for ticker, (name, market) in stock_info.items():
@@ -458,9 +470,10 @@ def _make_fast_score_func(
 
             f_dates = fund_dates.get(ticker, [])
             fidx = bisect.bisect_right(f_dates, as_of_date)
-            if fidx == 0:
+            fundamental = _latest_non_empty_fund_values(fund_data.get(ticker, []), fidx)
+            if fundamental is None:
                 continue
-            per, pbr, eps, bps, div = fund_data[ticker][fidx - 1]
+            per, pbr, eps, bps, div, _dps = fundamental
             quality = _latest_available_quality_metric(
                 quality_data.get(ticker, []),
                 as_of_date=as_of_date,

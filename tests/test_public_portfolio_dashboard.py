@@ -1718,6 +1718,7 @@ def test_render_dashboard_shows_read_only_summary_positions_and_warnings(monkeyp
         caption=record("caption"),
         success=record("success"),
         warning=record("warning"),
+        info=record("info"),
         metric=record("metric"),
         columns=record("columns"),
         subheader=record("subheader"),
