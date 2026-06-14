@@ -144,6 +144,41 @@ def test_sync_phase1_data_deactivates_stocks_missing_from_latest_universe():
     assert current_stock.is_active is True
 
 
+def test_sync_phase1_data_uses_historical_universe_without_deactivating_existing_stocks():
+    class HistoricalProvider(FakeProvider):
+        def __init__(self):
+            self.universe_dates = []
+
+        def get_universe(self, target_date=None):
+            self.universe_dates.append(target_date)
+            return [{"ticker": "005930", "name": "Samsung", "market": "KOSPI"}]
+
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        session.add(Stock(ticker="000660", name="old", market="KOSPI", is_active=True))
+
+    provider = HistoricalProvider()
+    sync_phase1_data(
+        engine=engine,
+        provider=provider,
+        start_date=date(2009, 1, 1),
+        end_date=date(2010, 12, 31),
+        universe_date=date(2010, 1, 4),
+        deactivate_missing=False,
+    )
+
+    with session_scope(engine) as session:
+        old_stock = session.get(Stock, "000660")
+        current_stock = session.get(Stock, "005930")
+
+    assert provider.universe_dates == [date(2010, 1, 4)]
+    assert old_stock is not None
+    assert old_stock.is_active is True
+    assert current_stock is not None
+    assert current_stock.is_active is True
+
+
 def test_sync_phase1_data_fails_when_no_market_rows_are_collected():
     class EmptyProvider(FakeProvider):
         def get_daily_prices(self, ticker, start_date, end_date):

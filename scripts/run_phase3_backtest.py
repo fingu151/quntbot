@@ -84,6 +84,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=_parse_ticker_tuple,
         default=INVERSE_ETF.leveraged_tickers,
     )
+    parser.add_argument(
+        "--inverse-etf-require-market-confirmation",
+        action=argparse.BooleanOptionalAction,
+        default=INVERSE_ETF.require_market_confirmation,
+    )
     parser.add_argument("--market-risk-rsi-window", type=int, default=MARKET_RISK.rsi_window)
     parser.add_argument("--market-risk-rsi-threshold", type=float, default=MARKET_RISK.rsi_overheat_threshold)
     parser.add_argument(
@@ -203,6 +208,7 @@ def run(
         enable_inverse_etf_hedge=args.enable_inverse_etf_hedge,
         inverse_etf_allowed_tickers=args.inverse_etf_allowed_tickers,
         inverse_etf_leveraged_tickers=args.inverse_etf_leveraged_tickers,
+        inverse_etf_require_market_confirmation=args.inverse_etf_require_market_confirmation,
         market_risk_rsi_window=args.market_risk_rsi_window,
         market_risk_rsi_threshold=args.market_risk_rsi_threshold,
         one_market_overheat_cash_target=args.one_market_overheat_cash_target,

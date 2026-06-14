@@ -49,6 +49,25 @@ def _config() -> InverseEtfHedgeConfig:
     )
 
 
+def test_conservative_mode_does_not_enter_on_macro_risk_off_alone():
+    config = InverseEtfHedgeConfig(
+        enabled=True,
+        allowed_tickers=("INV1", "INV2"),
+        leveraged_tickers=("INV2",),
+        require_market_confirmation=True,
+    )
+
+    signal = calculate_inverse_etf_signal(
+        as_of_date=date(2026, 5, 8),
+        macro_adjustment=_macro(status="risk_off", cash_target=0.40),
+        domestic_index_closes={},
+        config=config,
+    )
+
+    assert signal.status == "hedge_off"
+    assert signal.evidence == []
+
+
 def test_market_drop_creates_1x_inverse_etf_target():
     signal = calculate_inverse_etf_signal(
         as_of_date=date(2026, 5, 8),

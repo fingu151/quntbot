@@ -73,6 +73,8 @@ def calculate_inverse_etf_signal(
     evidence: list[dict[str, Any]] = []
     signals: list[str] = []
     severe = False
+    macro_evidence: dict[str, Any] | None = None
+    macro_signal: str | None = None
 
     market_returns = macro_adjustment.us_market.returns
     for symbol, value in sorted(market_returns.items()):
@@ -103,14 +105,14 @@ def calculate_inverse_etf_signal(
     if macro_adjustment.status == "risk_off":
         if macro_adjustment.cash_target >= 0.40:
             severe = True
-        signals.append(f"macro:{macro_adjustment.status}:{macro_adjustment.cash_target:.2%}")
-        evidence.append({
+        macro_signal = f"macro:{macro_adjustment.status}:{macro_adjustment.cash_target:.2%}"
+        macro_evidence = {
             "reason": "inverse_etf_hedge_macro_risk_off",
             "date": str(as_of_date),
             "macro_status": macro_adjustment.status,
             "cash_target": macro_adjustment.cash_target,
             "severity": "severe" if macro_adjustment.cash_target >= 0.40 else "moderate",
-        })
+        }
 
     for symbol, closes in sorted(domestic_index_closes.items()):
         rsi = _rsi_from_closes(closes, 14)
@@ -141,6 +143,13 @@ def calculate_inverse_etf_signal(
                 "threshold": config.overbought_rsi_threshold,
                 "severity": "moderate",
             })
+
+    if macro_evidence is not None and (
+        not config.require_market_confirmation or evidence
+    ):
+        if macro_signal is not None:
+            signals.append(macro_signal)
+        evidence.append(macro_evidence)
 
     if not evidence:
         return _empty_signal("hedge_off", thresholds)

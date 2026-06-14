@@ -33,7 +33,7 @@ PYKRX_REQUEST_TIMEOUT_SEC = 15
 
 
 class MarketDataProvider(Protocol):
-    def get_universe(self) -> list[dict[str, Any]]:
+    def get_universe(self, target_date: date | None = None) -> list[dict[str, Any]]:
         ...
 
     def get_daily_prices(self, ticker: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
@@ -364,6 +364,8 @@ def sync_phase1_data(
     start_date: date,
     end_date: date,
     max_workers: int = 5,
+    universe_date: date | None = None,
+    deactivate_missing: bool = True,
 ) -> dict[str, int]:
     error: Exception | None = None
     result: dict[str, int] | None = None
@@ -373,12 +375,17 @@ def sync_phase1_data(
         session.flush()
 
         try:
-            universe = provider.get_universe()
+            universe = (
+                provider.get_universe(target_date=universe_date)
+                if universe_date is not None
+                else provider.get_universe()
+            )
             if not universe:
                 raise RuntimeError("no universe rows collected")
             _validate_universe_markets_before_deactivation(session, universe)
             universe_count = upsert_stocks(session, universe)
-            deactivate_stocks_not_in(session, [row["ticker"] for row in universe])
+            if deactivate_missing:
+                deactivate_stocks_not_in(session, [row["ticker"] for row in universe])
 
             tickers = [row["ticker"] for row in universe]
             price_rows, fundamental_rows, investor_flow_rows = _fetch_market_data_parallel(

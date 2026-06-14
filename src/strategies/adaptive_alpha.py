@@ -53,6 +53,17 @@ class AdaptiveAlphaConfig:
 DEFAULT_ADAPTIVE_ALPHA = AdaptiveAlphaConfig()
 
 
+ADAPTIVE_ALPHA_V2 = AdaptiveAlphaConfig(
+    top_n=30,
+    sell_rank_buffer=40,
+    max_position_weight=0.10,
+    profit_take_pct=0.16,
+    atr_multiplier=2.2,
+    technical_weight=0.35,
+    volatility_penalty_weight=0.20,
+)
+
+
 def calculate_adaptive_alpha_scores(
     engine: Engine,
     *,

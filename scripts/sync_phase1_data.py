@@ -22,6 +22,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync Phase 1 market data into SQLite.")
     parser.add_argument("--start-date", type=_parse_date, default=None)
     parser.add_argument("--end-date", type=_parse_date, default=date.today())
+    parser.add_argument("--universe-date", type=_parse_date, default=None)
+    parser.add_argument(
+        "--no-deactivate-missing",
+        action="store_false",
+        dest="deactivate_missing",
+        help="Do not deactivate existing stocks missing from the collected universe.",
+    )
     parser.add_argument("--database-url", default=None)
     parser.add_argument(
         "--workers",
@@ -56,6 +63,8 @@ def run(
         start_date=args.start_date,
         end_date=args.end_date,
         max_workers=args.workers,
+        universe_date=args.universe_date,
+        deactivate_missing=args.deactivate_missing,
     )
     print(
         "Phase 1 sync complete: "

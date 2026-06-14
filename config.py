@@ -315,6 +315,9 @@ class InverseEtfHedgeConfig:
     severe_market_drop_threshold: float = float(
         os.getenv("INVERSE_ETF_SEVERE_MARKET_DROP_THRESHOLD", "-0.05")
     )
+    require_market_confirmation: bool = os.getenv(
+        "INVERSE_ETF_REQUIRE_MARKET_CONFIRMATION", "false"
+    ).lower() in ("1", "true", "yes")
     max_holding_days: int = int(os.getenv("INVERSE_ETF_MAX_HOLDING_DAYS", "10"))
     stop_loss_pct: float = float(os.getenv("INVERSE_ETF_STOP_LOSS_PCT", "-0.07"))
     take_profit_pct: float = float(os.getenv("INVERSE_ETF_TAKE_PROFIT_PCT", "0.12"))

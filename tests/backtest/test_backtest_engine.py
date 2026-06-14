@@ -3,12 +3,13 @@
 import pytest
 
 from src.backtest import engine as backtest_engine
-from src.backtest.engine import _group_prices_by_date, _is_kosdaq_market, run_backtest
+from src.backtest.engine import _build_atr_cache, _group_prices_by_date, _is_kosdaq_market, run_backtest
 from src.data.database import create_tables, get_engine, session_scope
 from src.data.repositories import (
     upsert_market_index_prices,
     upsert_daily_prices,
     upsert_fundamentals,
+    upsert_investor_flows,
     upsert_quality_metrics,
     upsert_stocks,
 )
@@ -76,6 +77,15 @@ def score_always_aaa_bbb(engine, *, as_of_date, lookback_days=None):
     return [
         FactorScore("AAA", "AAA", "KOSPI", as_of_date, 1, 0, 1, 0, 0, 0, 2, 1),
         FactorScore("BBB", "BBB", "KOSPI", as_of_date, 0, 0, 0, 0, 0, 0, 0, 2),
+    ]
+
+
+def score_always_four_tickers(engine, *, as_of_date, lookback_days=None):
+    return [
+        FactorScore("AAA", "AAA", "KOSPI", as_of_date, 4, 0, 0, 0, 0, 0, 4, 1),
+        FactorScore("BBB", "BBB", "KOSPI", as_of_date, 3, 0, 0, 0, 0, 0, 3, 2),
+        FactorScore("CCC", "CCC", "KOSPI", as_of_date, 2, 0, 0, 0, 0, 0, 2, 3),
+        FactorScore("DDD", "DDD", "KOSPI", as_of_date, 1, 0, 0, 0, 0, 0, 1, 4),
     ]
 
 
@@ -910,6 +920,367 @@ def test_run_backtest_market_risk_overlay_reduces_exposure_to_cash_target():
     first_buy = next(trade for trade in result.trades if trade.side == "BUY")
     assert first_buy.gross_amount == pytest.approx(6_500)
     assert result.equity_curve[1].cash == pytest.approx(3_500)
+
+
+def test_run_backtest_baseline_cash_target_keeps_cash_without_risk_signal():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_single_stock_prices(
+        engine,
+        [
+            (date(2026, 1, 1), 100, 100),
+            (date(2026, 1, 2), 100, 100),
+            (date(2026, 1, 3), 100, 100),
+        ],
+    )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 3),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+        enable_market_risk_overlay=False,
+        enable_macro_risk_overlay=False,
+        baseline_cash_target=0.10,
+        rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        weighting="equal",
+    )
+
+    first_buy = next(trade for trade in result.trades if trade.side == "BUY")
+    assert first_buy.gross_amount == pytest.approx(9_000)
+    assert result.equity_curve[1].cash == pytest.approx(1_000)
+
+
+def test_run_backtest_volatility_cash_overlay_raises_cash_target_when_market_is_volatile():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_single_stock_prices(
+        engine,
+        [
+            (date(2026, 1, 1), 100, 100),
+            (date(2026, 1, 2), 100, 100),
+            (date(2026, 1, 3), 100, 100),
+        ],
+    )
+    volatile_rows = []
+    start = date(2025, 12, 24)
+    closes = [100, 115, 98, 116, 97, 117, 96, 118, 95]
+    for offset, close in enumerate(closes):
+        volatile_rows.append((start + timedelta(days=offset), close, close, close, close))
+    seed_market_index_prices(engine, "KOSPI", volatile_rows)
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 3),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+        enable_market_risk_overlay=False,
+        enable_macro_risk_overlay=False,
+        baseline_cash_target=0.10,
+        enable_volatility_cash_overlay=True,
+        volatility_cash_window=5,
+        volatility_moderate_annualized=0.05,
+        volatility_severe_annualized=0.10,
+        volatility_moderate_cash_target=0.20,
+        volatility_severe_cash_target=0.30,
+        rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        weighting="equal",
+    )
+
+    first_buy = next(trade for trade in result.trades if trade.side == "BUY")
+    assert first_buy.gross_amount == pytest.approx(7_000)
+    assert result.equity_curve[1].cash == pytest.approx(3_000)
+
+
+def test_run_backtest_flow_breadth_overlay_raises_cash_when_institutional_breadth_is_weak():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_single_stock_prices(
+        engine,
+        [
+            (date(2026, 1, 1), 100, 100),
+            (date(2026, 1, 2), 100, 100),
+            (date(2026, 1, 3), 100, 100),
+        ],
+    )
+    with session_scope(engine) as session:
+        upsert_stocks(
+            session,
+            [
+                {"ticker": "BBB", "name": "BBB", "market": "KOSPI"},
+                {"ticker": "CCC", "name": "CCC", "market": "KOSPI"},
+            ],
+        )
+        flow_rows = []
+        for offset in range(5):
+            flow_date = date(2025, 12, 28) + timedelta(days=offset)
+            for ticker in ("AAA", "BBB", "CCC"):
+                flow_rows.append(
+                    {
+                        "ticker": ticker,
+                        "date": flow_date,
+                        "individual_net_buy": 1_000_000,
+                        "foreign_net_buy": -600_000,
+                        "institution_net_buy": -500_000,
+                    }
+                )
+        upsert_investor_flows(session, flow_rows)
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 3),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+        enable_market_risk_overlay=False,
+        enable_macro_risk_overlay=False,
+        baseline_cash_target=0.10,
+        enable_flow_breadth_cash_overlay=True,
+        flow_breadth_window=3,
+        flow_breadth_moderate_threshold=0.45,
+        flow_breadth_severe_threshold=0.40,
+        flow_breadth_moderate_cash_target=0.20,
+        flow_breadth_severe_cash_target=0.30,
+        rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        weighting="equal",
+    )
+
+    first_buy = next(trade for trade in result.trades if trade.side == "BUY")
+    assert first_buy.gross_amount == pytest.approx(7_000)
+    assert result.equity_curve[1].cash == pytest.approx(3_000)
+
+
+def test_run_backtest_price_breadth_overlay_raises_cash_when_market_participation_is_weak():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_stocks(
+            session,
+            [
+                {"ticker": "AAA", "name": "AAA", "market": "KOSPI"},
+                {"ticker": "BBB", "name": "BBB", "market": "KOSPI"},
+                {"ticker": "CCC", "name": "CCC", "market": "KOSPI"},
+            ],
+        )
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "AAA", "date": date(2025, 12, 30), "open": 100, "close": 100},
+                {"ticker": "AAA", "date": date(2025, 12, 31), "open": 101, "close": 101},
+                {"ticker": "AAA", "date": date(2026, 1, 1), "open": 102, "close": 102},
+                {"ticker": "AAA", "date": date(2026, 1, 2), "open": 100, "close": 100},
+                {"ticker": "BBB", "date": date(2025, 12, 30), "open": 102, "close": 102},
+                {"ticker": "BBB", "date": date(2025, 12, 31), "open": 101, "close": 101},
+                {"ticker": "BBB", "date": date(2026, 1, 1), "open": 100, "close": 100},
+                {"ticker": "BBB", "date": date(2026, 1, 2), "open": 100, "close": 100},
+                {"ticker": "CCC", "date": date(2025, 12, 30), "open": 102, "close": 102},
+                {"ticker": "CCC", "date": date(2025, 12, 31), "open": 101, "close": 101},
+                {"ticker": "CCC", "date": date(2026, 1, 1), "open": 100, "close": 100},
+                {"ticker": "CCC", "date": date(2026, 1, 2), "open": 100, "close": 100},
+            ],
+        )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 2),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+        enable_market_risk_overlay=False,
+        enable_macro_risk_overlay=False,
+        baseline_cash_target=0.10,
+        enable_price_breadth_cash_overlay=True,
+        price_breadth_ma_days=3,
+        price_breadth_min_count=3,
+        price_breadth_moderate_threshold=0.45,
+        price_breadth_severe_threshold=0.40,
+        price_breadth_moderate_cash_target=0.20,
+        price_breadth_severe_cash_target=0.30,
+        rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        weighting="equal",
+    )
+
+    first_buy = next(trade for trade in result.trades if trade.side == "BUY")
+    assert first_buy.gross_amount == pytest.approx(7_000)
+    assert result.equity_curve[1].cash == pytest.approx(3_000)
+
+
+def test_crash_guard_cash_target_detects_domestic_index_breakdown():
+    rows = []
+    start = date(2026, 1, 1)
+    for offset in range(130):
+        close = 130 - offset
+        rows.append(
+            {
+                "date": start + timedelta(days=offset),
+                "open": float(close),
+                "high": float(close),
+                "low": float(close),
+                "close": float(close),
+            }
+        )
+
+    target = backtest_engine._crash_guard_cash_target(
+        {"KOSPI": rows},
+        as_of_date=start + timedelta(days=129),
+        moderate_5d_drop_pct=-0.03,
+        severe_5d_drop_pct=-0.05,
+        moderate_20d_drop_pct=-0.05,
+        severe_20d_drop_pct=-0.08,
+        moderate_cash_target=0.35,
+        severe_cash_target=0.55,
+    )
+
+    assert target == pytest.approx(0.55)
+
+
+def test_crash_guard_reentry_reduces_cash_target_after_recovery_confirmation():
+    rows = []
+    start = date(2026, 1, 1)
+    closes = [100.0] * 70 + [120.0] * 30 + [75.0] * 20 + [77.0 + offset for offset in range(10)]
+    for offset, close in enumerate(closes):
+        rows.append(
+            {
+                "date": start + timedelta(days=offset),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+            }
+        )
+
+    target = backtest_engine._crash_guard_cash_target(
+        {"KOSPI": rows},
+        as_of_date=start + timedelta(days=len(closes) - 1),
+        moderate_5d_drop_pct=-0.03,
+        severe_5d_drop_pct=-0.05,
+        moderate_20d_drop_pct=-0.05,
+        severe_20d_drop_pct=-0.08,
+        moderate_cash_target=0.35,
+        severe_cash_target=0.55,
+        enable_reentry=True,
+        reentry_cash_target=0.15,
+        reentry_ma_days=20,
+        reentry_rsi_window=14,
+        reentry_rsi_threshold=45.0,
+        reentry_positive_days=3,
+    )
+
+    assert target == pytest.approx(0.15)
+
+
+def test_dynamic_top_n_compresses_holdings_when_crash_guard_is_active():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_prices_for_tickers(
+        engine,
+        ["AAA", "BBB", "CCC", "DDD"],
+        start=date(2026, 1, 1),
+        days=4,
+        price=100,
+    )
+    seed_market_index_prices(
+        engine,
+        "KOSPI",
+        [
+            (date(2025, 12, 26), 100, 100, 100, 100),
+            (date(2025, 12, 27), 100, 100, 100, 100),
+            (date(2025, 12, 28), 100, 100, 100, 100),
+            (date(2025, 12, 29), 100, 100, 100, 100),
+            (date(2025, 12, 30), 100, 100, 100, 100),
+            (date(2025, 12, 31), 100, 100, 100, 100),
+            (date(2026, 1, 1), 100, 100, 100, 100),
+            (date(2026, 1, 2), 94, 94, 94, 94),
+        ],
+    )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 4),
+        scoring_func=score_always_four_tickers,
+        initial_capital=10_000,
+        top_n=4,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        enable_stops=False,
+        enable_market_risk_overlay=False,
+        enable_macro_risk_overlay=False,
+        enable_crash_guard=True,
+        crash_guard_moderate_5d_drop_pct=-0.03,
+        crash_guard_severe_5d_drop_pct=-0.05,
+        crash_guard_moderate_cash_target=0.35,
+        crash_guard_severe_cash_target=0.55,
+        enable_dynamic_top_n=True,
+        defensive_top_n=2,
+        severe_defensive_top_n=2,
+        rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        weighting="equal",
+    )
+
+    rebalance_sells = [
+        trade.ticker
+        for trade in result.trades
+        if trade.side == "SELL" and trade.reason == "rebalance"
+    ]
+    assert rebalance_sells == ["CCC", "DDD"]
+
+
+def test_build_atr_cache_matches_true_range_window():
+    prices = {}
+    start = date(2026, 1, 1)
+    rows = [
+        (10, 9, 9.5),
+        (12, 8, 11),
+        (13, 10, 12),
+        (15, 11, 14),
+    ]
+    for offset, (high, low, close) in enumerate(rows):
+        price_date = start + timedelta(days=offset)
+        prices[("AAA", price_date)] = {
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
+        }
+
+    cache = _build_atr_cache(prices, window=2)
+
+    assert cache[("AAA", start + timedelta(days=2))] == pytest.approx(3.5)
+    assert cache[("AAA", start + timedelta(days=3))] == pytest.approx(3.5)
 
 
 def test_stops_with_costs_change_trade_count_and_equity():

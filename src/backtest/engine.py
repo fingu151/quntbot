@@ -4,6 +4,7 @@ import bisect
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import date, timedelta
+import math
 from typing import Any
 
 import pandas as pd
@@ -30,7 +31,7 @@ from src.backtest.metrics import (
 )
 from src.backtest.models import BacktestResult, BacktestTrade, EquityPoint
 from src.data.database import session_scope
-from src.data.models import DailyPrice, Fundamental, MarketIndexPrice, QualityMetric, Stock
+from src.data.models import DailyPrice, Fundamental, InvestorFlow, MarketIndexPrice, QualityMetric, Stock
 from src.factors.engine import (
     _latest_available_quality_metric,
     _recent_available_operating_margins,
@@ -88,9 +89,47 @@ def run_backtest(
     nasdaq_moderate_cash_target: float = MARKET_RISK.nasdaq_moderate_cash_target,
     nasdaq_severe_cash_target: float = MARKET_RISK.nasdaq_severe_cash_target,
     enable_macro_risk_overlay: bool = MACRO_RISK.enable_overlay,
+    baseline_cash_target: float = 0.0,
+    baseline_cash_reduce_reason: str = "baseline_cash_reserve",
+    enable_volatility_cash_overlay: bool = False,
+    volatility_cash_window: int = 20,
+    volatility_moderate_annualized: float = 0.25,
+    volatility_severe_annualized: float = 0.35,
+    volatility_moderate_cash_target: float = 0.20,
+    volatility_severe_cash_target: float = 0.30,
+    enable_flow_breadth_cash_overlay: bool = False,
+    flow_breadth_window: int = 20,
+    flow_breadth_moderate_threshold: float = 0.45,
+    flow_breadth_severe_threshold: float = 0.40,
+    flow_breadth_moderate_cash_target: float = 0.20,
+    flow_breadth_severe_cash_target: float = 0.30,
+    enable_price_breadth_cash_overlay: bool = False,
+    price_breadth_ma_days: int = 60,
+    price_breadth_min_count: int = 50,
+    price_breadth_moderate_threshold: float = 0.45,
+    price_breadth_severe_threshold: float = 0.35,
+    price_breadth_moderate_cash_target: float = 0.20,
+    price_breadth_severe_cash_target: float = 0.35,
+    enable_crash_guard: bool = False,
+    crash_guard_moderate_5d_drop_pct: float = -0.03,
+    crash_guard_severe_5d_drop_pct: float = -0.05,
+    crash_guard_moderate_20d_drop_pct: float = -0.05,
+    crash_guard_severe_20d_drop_pct: float = -0.08,
+    crash_guard_moderate_cash_target: float = 0.35,
+    crash_guard_severe_cash_target: float = 0.55,
+    enable_crash_guard_reentry: bool = False,
+    crash_guard_reentry_cash_target: float = 0.15,
+    crash_guard_reentry_ma_days: int = 20,
+    crash_guard_reentry_rsi_window: int = 14,
+    crash_guard_reentry_rsi_threshold: float = 45.0,
+    crash_guard_reentry_positive_days: int = 3,
+    enable_dynamic_top_n: bool = False,
+    defensive_top_n: int | None = None,
+    severe_defensive_top_n: int | None = None,
     enable_inverse_etf_hedge: bool = INVERSE_ETF.enabled,
     inverse_etf_allowed_tickers: tuple[str, ...] = INVERSE_ETF.allowed_tickers,
     inverse_etf_leveraged_tickers: tuple[str, ...] = INVERSE_ETF.leveraged_tickers,
+    inverse_etf_require_market_confirmation: bool = INVERSE_ETF.require_market_confirmation,
 ) -> BacktestResult:
     # 기본 스코어러는 날짜마다 DB를 재쿼리해서 매우 느림.
     # 벌크 로딩 클로저로 교체하면 동일한 결과를 훨씬 빠르게 얻음.
@@ -105,8 +144,24 @@ def run_backtest(
     capital = float(initial_capital or PORTFOLIO.initial_capital)
     target_count = int(top_n or PORTFOLIO.n_holdings)
     prices = _load_prices(engine, start_date=start_date, end_date=end_date)
+    atr_cache = _build_atr_cache(prices, window=atr_window) if enable_stops and enable_atr_stop else {}
     prices_by_date = _group_prices_by_date(prices)
     index_prices = _load_market_index_prices(engine, end_date=end_date)
+    investor_flows_by_date = (
+        _load_investor_flows(engine, start_date=start_date, end_date=end_date)
+        if enable_flow_breadth_cash_overlay
+        else {}
+    )
+    price_breadth_closes = (
+        _load_price_breadth_closes(
+            engine,
+            start_date=start_date,
+            end_date=end_date,
+            lookback_days=max(price_breadth_ma_days * 3, price_breadth_ma_days + 5),
+        )
+        if enable_price_breadth_cash_overlay
+        else {}
+    )
     markets = _load_markets(engine)
     inverse_config = InverseEtfHedgeConfig(
         enabled=enable_inverse_etf_hedge,
@@ -123,6 +178,7 @@ def run_backtest(
         severe_overbought_rsi_threshold=INVERSE_ETF.severe_overbought_rsi_threshold,
         market_drop_threshold=INVERSE_ETF.market_drop_threshold,
         severe_market_drop_threshold=INVERSE_ETF.severe_market_drop_threshold,
+        require_market_confirmation=inverse_etf_require_market_confirmation,
         max_holding_days=INVERSE_ETF.max_holding_days,
         stop_loss_pct=INVERSE_ETF.stop_loss_pct,
         take_profit_pct=INVERSE_ETF.take_profit_pct,
@@ -224,8 +280,51 @@ def run_backtest(
         buy_budget_multiplier = 1.0
         risk_reduce_reason = "market_risk_reduce"
         if should_rebalance and previous_trading_date is not None:
+            if baseline_cash_target > 0:
+                risk_cash_target = min(max(baseline_cash_target, 0.0), 1.0)
+                risk_reduce_reason = baseline_cash_reduce_reason
+            if enable_volatility_cash_overlay:
+                volatility_cash_target = _volatility_cash_target(
+                    index_prices,
+                    as_of_date=previous_trading_date,
+                    window=volatility_cash_window,
+                    moderate_annualized=volatility_moderate_annualized,
+                    severe_annualized=volatility_severe_annualized,
+                    moderate_cash_target=volatility_moderate_cash_target,
+                    severe_cash_target=volatility_severe_cash_target,
+                )
+                if volatility_cash_target > risk_cash_target:
+                    risk_cash_target = volatility_cash_target
+                    risk_reduce_reason = "volatility_cash_reduce"
+            if enable_flow_breadth_cash_overlay:
+                flow_cash_target = _flow_breadth_cash_target(
+                    investor_flows_by_date,
+                    as_of_date=previous_trading_date,
+                    window=flow_breadth_window,
+                    moderate_threshold=flow_breadth_moderate_threshold,
+                    severe_threshold=flow_breadth_severe_threshold,
+                    moderate_cash_target=flow_breadth_moderate_cash_target,
+                    severe_cash_target=flow_breadth_severe_cash_target,
+                )
+                if flow_cash_target > risk_cash_target:
+                    risk_cash_target = flow_cash_target
+                    risk_reduce_reason = "flow_breadth_cash_reduce"
+            if enable_price_breadth_cash_overlay:
+                price_breadth_cash_target = _price_breadth_cash_target(
+                    price_breadth_closes,
+                    as_of_date=previous_trading_date,
+                    ma_days=price_breadth_ma_days,
+                    min_count=price_breadth_min_count,
+                    moderate_threshold=price_breadth_moderate_threshold,
+                    severe_threshold=price_breadth_severe_threshold,
+                    moderate_cash_target=price_breadth_moderate_cash_target,
+                    severe_cash_target=price_breadth_severe_cash_target,
+                )
+                if price_breadth_cash_target > risk_cash_target:
+                    risk_cash_target = price_breadth_cash_target
+                    risk_reduce_reason = "price_breadth_cash_reduce"
             if enable_market_risk_overlay:
-                risk_cash_target = _market_risk_cash_target(
+                market_cash_target = _market_risk_cash_target(
                     index_prices,
                     as_of_date=previous_trading_date,
                     rsi_window=market_risk_rsi_window,
@@ -237,6 +336,9 @@ def run_backtest(
                     nasdaq_moderate_cash_target=nasdaq_moderate_cash_target,
                     nasdaq_severe_cash_target=nasdaq_severe_cash_target,
                 )
+                if market_cash_target > risk_cash_target:
+                    risk_cash_target = market_cash_target
+                    risk_reduce_reason = "market_risk_reduce"
             if enable_macro_risk_overlay:
                 macro_adjustment = _macro_adjustment_for(previous_trading_date)
                 buy_budget_multiplier = macro_adjustment.buy_budget_multiplier
@@ -244,6 +346,35 @@ def run_backtest(
                     risk_cash_target = macro_adjustment.cash_target
                     if macro_adjustment.status == "risk_off":
                         risk_reduce_reason = "macro_risk_reduce"
+            if enable_crash_guard:
+                crash_cash_target = _crash_guard_cash_target(
+                    index_prices,
+                    as_of_date=previous_trading_date,
+                    moderate_5d_drop_pct=crash_guard_moderate_5d_drop_pct,
+                    severe_5d_drop_pct=crash_guard_severe_5d_drop_pct,
+                    moderate_20d_drop_pct=crash_guard_moderate_20d_drop_pct,
+                    severe_20d_drop_pct=crash_guard_severe_20d_drop_pct,
+                    moderate_cash_target=crash_guard_moderate_cash_target,
+                    severe_cash_target=crash_guard_severe_cash_target,
+                    enable_reentry=enable_crash_guard_reentry,
+                    reentry_cash_target=crash_guard_reentry_cash_target,
+                    reentry_ma_days=crash_guard_reentry_ma_days,
+                    reentry_rsi_window=crash_guard_reentry_rsi_window,
+                    reentry_rsi_threshold=crash_guard_reentry_rsi_threshold,
+                    reentry_positive_days=crash_guard_reentry_positive_days,
+                )
+                if crash_cash_target > risk_cash_target:
+                    risk_cash_target = crash_cash_target
+                    risk_reduce_reason = "crash_guard_reduce"
+            active_target_count = _dynamic_target_count(
+                base_target_count=target_count,
+                risk_cash_target=risk_cash_target,
+                enable_dynamic_top_n=enable_dynamic_top_n,
+                moderate_cash_target=crash_guard_moderate_cash_target,
+                severe_cash_target=crash_guard_severe_cash_target,
+                defensive_top_n=defensive_top_n,
+                severe_defensive_top_n=severe_defensive_top_n,
+            )
             previous_close_prices = {
                 ticker: price["close"]
                 for ticker, price in prices_by_date[previous_trading_date].items()
@@ -261,9 +392,9 @@ def run_backtest(
                 )
             ]
             ranked_tickers = [score.ticker for score in ranked_scores]
-            target_scores = ranked_scores[:target_count]
-            target_tickers = ranked_tickers[:target_count]
-            keep_tickers = set(ranked_tickers[:max(target_count, sell_rank_buffer)])
+            target_scores = ranked_scores[:active_target_count]
+            target_tickers = ranked_tickers[:active_target_count]
+            keep_tickers = set(ranked_tickers[:max(active_target_count, sell_rank_buffer)])
             if target_tickers:
                 last_rebalance_key = rebalance_key
 
@@ -429,11 +560,7 @@ def run_backtest(
                 return_from_entry = (close / entry) - 1.0
                 loss_from_peak = (close / peak_prices[ticker]) - 1.0
                 if ticker not in profit_taken:
-                    atr = (
-                        _average_true_range(prices, ticker=ticker, as_of_date=trading_date, window=atr_window)
-                        if enable_atr_stop
-                        else None
-                    )
+                    atr = atr_cache.get((ticker, trading_date)) if enable_atr_stop else None
                     atr_stop_price = entry - (atr * atr_multiplier) if atr is not None else None
                     if atr_stop_price is not None and close <= atr_stop_price:
                         pending_exits.append((ticker, "atr_stop", None))
@@ -592,6 +719,68 @@ def _load_market_index_prices(engine: Engine, *, end_date: date) -> dict[str, li
                 "close": float(row.close),
             }
         )
+    return grouped
+
+
+def _load_investor_flows(
+    engine: Engine,
+    *,
+    start_date: date,
+    end_date: date,
+) -> dict[date, list[dict[str, float | str]]]:
+    flow_start = start_date - timedelta(days=90)
+    with session_scope(engine) as session:
+        rows = session.scalars(
+            select(InvestorFlow)
+            .where(InvestorFlow.date >= flow_start, InvestorFlow.date <= end_date)
+            .order_by(InvestorFlow.date, InvestorFlow.ticker)
+        ).all()
+    grouped: dict[date, list[dict[str, float | str]]] = defaultdict(list)
+    for row in rows:
+        grouped[row.date].append(
+            {
+                "ticker": row.ticker,
+                "foreign": float(row.foreign_net_buy or 0.0),
+                "institution": float(row.institution_net_buy or 0.0),
+            }
+        )
+    return grouped
+
+
+def _load_price_breadth_closes(
+    engine: Engine,
+    *,
+    start_date: date,
+    end_date: date,
+    lookback_days: int,
+) -> dict[str, tuple[list[date], list[float]]]:
+    price_start = start_date - timedelta(days=max(lookback_days, 0))
+    with session_scope(engine) as session:
+        active_common_tickers = session.scalars(
+            select(Stock.ticker).where(
+                Stock.is_active.is_(True),
+                Stock.instrument_type == "COMMON_STOCK",
+            )
+        ).all()
+        if not active_common_tickers:
+            return {}
+        rows = session.scalars(
+            select(DailyPrice)
+            .where(
+                DailyPrice.date >= price_start,
+                DailyPrice.date <= end_date,
+                DailyPrice.ticker.in_(active_common_tickers),
+            )
+            .order_by(DailyPrice.ticker, DailyPrice.date)
+        ).all()
+
+    grouped: dict[str, tuple[list[date], list[float]]] = {}
+    for row in rows:
+        if row.close is None or row.close <= 0:
+            continue
+        dates, closes = grouped.setdefault(row.ticker, ([], []))
+        dates.append(row.date)
+        closes.append(float(row.close))
     return grouped
 
 
@@ -915,6 +1104,212 @@ def _market_risk_cash_target(
     return min(max(cash_target, 0.0), 1.0)
 
 
+def _volatility_cash_target(
+    index_prices: dict[str, list[dict[str, Any]]],
+    *,
+    as_of_date: date,
+    window: int,
+    moderate_annualized: float,
+    severe_annualized: float,
+    moderate_cash_target: float,
+    severe_cash_target: float,
+) -> float:
+    if window <= 1:
+        return 0.0
+    cash_target = 0.0
+    for symbol in ("KOSPI", "KOSDAQ"):
+        closes = _index_closes_until(index_prices.get(symbol, []), as_of_date)
+        if len(closes) <= window:
+            continue
+        recent = closes[-window - 1 :]
+        returns = [
+            (current / previous) - 1.0
+            for previous, current in zip(recent, recent[1:])
+            if previous > 0
+        ]
+        if len(returns) < window:
+            continue
+        mean_return = sum(returns) / len(returns)
+        variance = sum((value - mean_return) ** 2 for value in returns) / len(returns)
+        annualized_volatility = math.sqrt(variance) * math.sqrt(252)
+        if annualized_volatility >= severe_annualized:
+            cash_target = max(cash_target, severe_cash_target)
+        elif annualized_volatility >= moderate_annualized:
+            cash_target = max(cash_target, moderate_cash_target)
+    return min(max(cash_target, 0.0), 1.0)
+
+
+def _flow_breadth_cash_target(
+    investor_flows_by_date: dict[date, list[dict[str, float | str]]],
+    *,
+    as_of_date: date,
+    window: int,
+    moderate_threshold: float,
+    severe_threshold: float,
+    moderate_cash_target: float,
+    severe_cash_target: float,
+) -> float:
+    if window <= 0:
+        return 0.0
+    flow_dates = [flow_date for flow_date in sorted(investor_flows_by_date) if flow_date <= as_of_date]
+    if not flow_dates:
+        return 0.0
+    selected_dates = flow_dates[-window:]
+    by_ticker: dict[str, float] = defaultdict(float)
+    for flow_date in selected_dates:
+        for row in investor_flows_by_date.get(flow_date, []):
+            ticker = str(row["ticker"])
+            by_ticker[ticker] += float(row["foreign"]) + float(row["institution"])
+    if not by_ticker:
+        return 0.0
+    positive_ratio = sum(1 for value in by_ticker.values() if value > 0) / len(by_ticker)
+    if positive_ratio <= severe_threshold:
+        return min(max(severe_cash_target, 0.0), 1.0)
+    if positive_ratio <= moderate_threshold:
+        return min(max(moderate_cash_target, 0.0), 1.0)
+    return 0.0
+
+
+def _price_breadth_cash_target(
+    price_breadth_closes: dict[str, tuple[list[date], list[float]]],
+    *,
+    as_of_date: date,
+    ma_days: int,
+    min_count: int,
+    moderate_threshold: float,
+    severe_threshold: float,
+    moderate_cash_target: float,
+    severe_cash_target: float,
+) -> float:
+    if ma_days <= 1 or min_count <= 0:
+        return 0.0
+    eligible_count = 0
+    above_ma_count = 0
+    for dates, closes in price_breadth_closes.values():
+        idx = bisect.bisect_right(dates, as_of_date)
+        if idx < ma_days:
+            continue
+        recent = closes[idx - ma_days : idx]
+        if len(recent) < ma_days:
+            continue
+        moving_average = sum(recent) / ma_days
+        current_close = closes[idx - 1]
+        eligible_count += 1
+        if current_close >= moving_average:
+            above_ma_count += 1
+    if eligible_count < min_count:
+        return 0.0
+
+    participation_ratio = above_ma_count / eligible_count
+    if participation_ratio <= severe_threshold:
+        return min(max(severe_cash_target, 0.0), 1.0)
+    if participation_ratio <= moderate_threshold:
+        return min(max(moderate_cash_target, 0.0), 1.0)
+    return 0.0
+
+
+def _crash_guard_cash_target(
+    index_prices: dict[str, list[dict[str, Any]]],
+    *,
+    as_of_date: date,
+    moderate_5d_drop_pct: float,
+    severe_5d_drop_pct: float,
+    moderate_20d_drop_pct: float,
+    severe_20d_drop_pct: float,
+    moderate_cash_target: float,
+    severe_cash_target: float,
+    enable_reentry: bool = False,
+    reentry_cash_target: float = 0.15,
+    reentry_ma_days: int = 20,
+    reentry_rsi_window: int = 14,
+    reentry_rsi_threshold: float = 45.0,
+    reentry_positive_days: int = 3,
+) -> float:
+    cash_target = 0.0
+    reentry_confirmed = False
+    for symbol in ("KOSPI", "KOSDAQ"):
+        rows = [
+            row
+            for row in index_prices.get(symbol, [])
+            if row["date"] <= as_of_date and row["close"] > 0
+        ]
+        if not rows:
+            continue
+        rows.sort(key=lambda row: row["date"])
+        closes = [float(row["close"]) for row in rows]
+        current = closes[-1]
+        severe = False
+        moderate = False
+        if len(closes) >= 6:
+            return_5d = (current / closes[-6]) - 1.0
+            severe = severe or return_5d <= severe_5d_drop_pct
+            moderate = moderate or return_5d <= moderate_5d_drop_pct
+        if len(closes) >= 21:
+            return_20d = (current / closes[-21]) - 1.0
+            severe = severe or return_20d <= severe_20d_drop_pct
+            moderate = moderate or return_20d <= moderate_20d_drop_pct
+        if len(closes) >= 120:
+            ma20 = sum(closes[-20:]) / 20
+            ma60 = sum(closes[-60:]) / 60
+            ma120 = sum(closes[-120:]) / 120
+            severe = severe or (current < ma120 and ma20 < ma60)
+            moderate = moderate or (current < ma60 and ma20 < ma60)
+        reentry_confirmed = reentry_confirmed or _crash_guard_reentry_confirmed(
+            closes,
+            ma_days=reentry_ma_days,
+            rsi_window=reentry_rsi_window,
+            rsi_threshold=reentry_rsi_threshold,
+            positive_days=reentry_positive_days,
+        )
+        if severe:
+            cash_target = max(cash_target, severe_cash_target)
+        elif moderate:
+            cash_target = max(cash_target, moderate_cash_target)
+    if enable_reentry and cash_target > 0 and reentry_confirmed:
+        cash_target = min(cash_target, reentry_cash_target)
+    return min(max(cash_target, 0.0), 1.0)
+
+
+def _crash_guard_reentry_confirmed(
+    closes: list[float],
+    *,
+    ma_days: int,
+    rsi_window: int,
+    rsi_threshold: float,
+    positive_days: int,
+) -> bool:
+    required = max(ma_days, rsi_window + 1, positive_days + 1)
+    if required <= 0 or len(closes) < required:
+        return False
+    recent = closes[-positive_days - 1 :]
+    if any(current <= previous for previous, current in zip(recent, recent[1:])):
+        return False
+    moving_average = sum(closes[-ma_days:]) / ma_days
+    if closes[-1] < moving_average:
+        return False
+    rsi = _rsi_from_closes(closes, rsi_window)
+    return rsi is not None and rsi >= rsi_threshold
+
+
+def _dynamic_target_count(
+    *,
+    base_target_count: int,
+    risk_cash_target: float,
+    enable_dynamic_top_n: bool,
+    moderate_cash_target: float,
+    severe_cash_target: float,
+    defensive_top_n: int | None,
+    severe_defensive_top_n: int | None,
+) -> int:
+    if not enable_dynamic_top_n or risk_cash_target <= 0:
+        return base_target_count
+    if severe_defensive_top_n is not None and risk_cash_target >= severe_cash_target:
+        return max(1, min(base_target_count, severe_defensive_top_n))
+    if defensive_top_n is not None and risk_cash_target >= moderate_cash_target:
+        return max(1, min(base_target_count, defensive_top_n))
+    return base_target_count
+
+
 def _index_closes_until(rows: list[dict[str, Any]], as_of_date: date) -> list[float]:
     return [float(row["close"]) for row in rows if row["date"] <= as_of_date and row["close"] > 0]
 
@@ -944,6 +1339,33 @@ def _rsi_from_closes(closes: list[float], window: int) -> float | None:
         return 100.0 if average_gain > 0 else 50.0
     relative_strength = average_gain / average_loss
     return 100.0 - (100.0 / (1.0 + relative_strength))
+
+
+def _build_atr_cache(
+    prices: dict[tuple[str, date], dict[str, float]],
+    *,
+    window: int,
+) -> dict[tuple[str, date], float]:
+    grouped: dict[str, list[tuple[date, dict[str, float]]]] = defaultdict(list)
+    for (ticker, price_date), price in prices.items():
+        grouped[ticker].append((price_date, price))
+
+    cache: dict[tuple[str, date], float] = {}
+    for ticker, rows in grouped.items():
+        rows.sort(key=lambda item: item[0])
+        true_ranges: list[float] = []
+        for (_, previous), (current_date, current) in zip(rows, rows[1:]):
+            previous_close = previous["close"]
+            true_ranges.append(
+                max(
+                    current["high"] - current["low"],
+                    abs(current["high"] - previous_close),
+                    abs(current["low"] - previous_close),
+                )
+            )
+            if len(true_ranges) >= window:
+                cache[(ticker, current_date)] = sum(true_ranges[-window:]) / window
+    return cache
 
 
 def _average_true_range(
