@@ -70,6 +70,7 @@ def run_backtest(
     enable_atr_stop: bool = EXIT_RULES.enable_atr_stop,
     atr_window: int = EXIT_RULES.atr_window,
     atr_multiplier: float = EXIT_RULES.atr_multiplier,
+    atr_only_stop: bool = EXIT_RULES.atr_only_stop,
     rebalance_frequency: str = REBALANCE.frequency,
     profit_take_pct: float = EXIT_RULES.profit_take_pct,
     profit_take_sell_fraction: float = EXIT_RULES.profit_take_sell_fraction,
@@ -564,7 +565,10 @@ def run_backtest(
                     atr_stop_price = entry - (atr * atr_multiplier) if atr is not None else None
                     if atr_stop_price is not None and close <= atr_stop_price:
                         pending_exits.append((ticker, "atr_stop", None))
-                    elif return_from_entry <= stop_loss_pct:
+                    elif (
+                        not (atr_only_stop and atr_stop_price is not None)
+                        and return_from_entry <= stop_loss_pct
+                    ):
                         pending_exits.append((ticker, "stop_loss", None))
                     elif return_from_entry >= profit_take_pct:
                         sell_qty = positions[ticker] * profit_take_sell_fraction

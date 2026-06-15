@@ -34,6 +34,7 @@ class AdaptiveAlphaConfig:
     breakeven_stop_pct: float = 0.0
     atr_window: int = 14
     atr_multiplier: float = 2.2
+    atr_only_stop: bool = False
     technical_weight: float = 0.30
     volatility_penalty_weight: float = 0.15
     lookback_days: int = 90
@@ -162,6 +163,7 @@ def run_adaptive_alpha_backtest(
         "enable_atr_stop": True,
         "atr_window": config.atr_window,
         "atr_multiplier": config.atr_multiplier,
+        "atr_only_stop": config.atr_only_stop,
         "profit_take_pct": config.profit_take_pct,
         "profit_take_sell_fraction": config.profit_take_sell_fraction,
         "breakeven_stop_pct": config.breakeven_stop_pct,

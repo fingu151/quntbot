@@ -1658,3 +1658,66 @@ def test_inverse_etf_hedge_disabled_preserves_no_inverse_trades():
 
     assert all(trade.ticker != "INV1" for trade in result.trades)
 
+
+
+def _seed_atr_only_stop_prices(engine):
+    with session_scope(engine) as session:
+        upsert_stocks(session, [{"ticker": "AAA", "name": "AAA", "market": "KOSPI"}])
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "AAA", "date": date(2026, 1, 1), "open": 100, "high": 101, "low": 99, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 2), "open": 100, "high": 101, "low": 99, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 3), "open": 100, "high": 101, "low": 99, "close": 100},
+                {"ticker": "AAA", "date": date(2026, 1, 4), "open": 100, "high": 101, "low": 99, "close": 100},
+                # -8% drop: past fixed -7% stop but well above the wide ATR stop.
+                {"ticker": "AAA", "date": date(2026, 1, 5), "open": 92, "high": 93, "low": 91, "close": 92},
+                {"ticker": "AAA", "date": date(2026, 1, 6), "open": 92, "high": 93, "low": 91, "close": 92},
+            ],
+        )
+
+
+def _run_atr_only_stop_backtest(engine, *, atr_only_stop):
+    return run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 6),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        stop_loss_pct=-0.07,
+        enable_atr_stop=True,
+        atr_window=3,
+        atr_multiplier=5.0,
+        atr_only_stop=atr_only_stop,
+        rebalance_frequency="daily",
+        sell_rank_buffer=1,
+        min_holding_trading_days=0,
+        weighting="equal",
+    )
+
+
+def test_run_backtest_atr_only_stop_skips_fixed_stop_when_atr_available():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    _seed_atr_only_stop_prices(engine)
+
+    result = _run_atr_only_stop_backtest(engine, atr_only_stop=True)
+
+    stop_sells = [t for t in result.trades if t.side == "SELL" and t.reason.startswith("stop_loss")]
+    assert stop_sells == []
+
+
+def test_run_backtest_default_keeps_fixed_stop_alongside_atr():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    _seed_atr_only_stop_prices(engine)
+
+    result = _run_atr_only_stop_backtest(engine, atr_only_stop=False)
+
+    stop_sells = [t for t in result.trades if t.side == "SELL" and t.reason.startswith("stop_loss")]
+    assert len(stop_sells) == 1

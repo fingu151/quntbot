@@ -41,6 +41,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--enable-atr-stop", action=argparse.BooleanOptionalAction, default=EXIT_RULES.enable_atr_stop)
     parser.add_argument("--atr-window", type=int, default=EXIT_RULES.atr_window)
     parser.add_argument("--atr-multiplier", type=float, default=EXIT_RULES.atr_multiplier)
+    parser.add_argument(
+        "--atr-only-stop",
+        action=argparse.BooleanOptionalAction,
+        default=EXIT_RULES.atr_only_stop,
+    )
     parser.add_argument("--profit-take-pct", type=float, default=EXIT_RULES.profit_take_pct)
     parser.add_argument(
         "--profit-take-sell-fraction",
@@ -205,6 +210,7 @@ def run(
                         enable_atr_stop=args.enable_atr_stop,
                         atr_window=args.atr_window,
                         atr_multiplier=args.atr_multiplier,
+                        atr_only_stop=args.atr_only_stop,
                         profit_take_pct=args.profit_take_pct,
                         profit_take_sell_fraction=args.profit_take_sell_fraction,
                         breakeven_stop_pct=args.breakeven_stop_pct,

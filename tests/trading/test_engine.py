@@ -19,6 +19,8 @@ def _make_engine(max_buys: int = 3, max_sells: int = 3,
                  daily_loss_limit: float = -0.03,
                  stop_loss_pct: float = -0.08,
                  trailing_stop_pct: float = -0.10,
+                 enable_atr_stop: bool = True,
+                 atr_only_stop: bool = False,
                  daily_anchor_path: Path | None = None,
                  atr_lookup=None,
                  trade_journal_recorder=None) -> TradingEngine:
@@ -33,6 +35,8 @@ def _make_engine(max_buys: int = 3, max_sells: int = 3,
     exit_rules = ExitRulesConfig(
         stop_loss_pct=stop_loss_pct,
         trailing_stop_pct=trailing_stop_pct,
+        enable_atr_stop=enable_atr_stop,
+        atr_only_stop=atr_only_stop,
     )
     engine = TradingEngine(
         mock_client,
@@ -408,6 +412,32 @@ def test_check_exit_rules_atr_stop_sells_before_static_stop(tmp_path):
         "005930", qty=10, price=0, side="SELL"
     )
     assert "005930" not in engine._exit_state_store.load()
+
+
+def test_check_exit_rules_atr_only_stop_keeps_static_stop_when_atr_stop_disabled(tmp_path):
+    engine = _make_engine(
+        stop_loss_pct=-0.05,
+        enable_atr_stop=False,
+        atr_only_stop=True,
+        atr_lookup=lambda ticker, as_of_date, window: 4_000.0,
+    )
+    engine._exit_state_store = ExitStateStore(tmp_path / "exit_state.json")
+    engine._client.get_holdings.return_value = [
+        {
+            "ticker": "005930",
+            "name": "Samsung",
+            "qty": 10,
+            "avg_price": 100_000,
+            "current_price": 94_000,
+        }
+    ]
+
+    triggered = engine.check_exit_rules()
+
+    assert triggered == ["005930"]
+    engine._client.place_order.assert_called_once_with(
+        "005930", qty=10, price=0, side="SELL"
+    )
 
 
 def test_check_exit_rules_prunes_zero_qty_holding_state(tmp_path):

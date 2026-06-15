@@ -244,6 +244,10 @@ class ExitRulesConfig:
     enable_atr_stop: bool = True
     atr_window: int = 14
     atr_multiplier: float = 2.2
+    # True면 ATR 스톱 사용 가능 종목은 고정 -stop_loss_pct 손절을 적용하지 않고
+    # ATR 스톱만으로 하방을 통제한다(완화). ATR 데이터가 없으면 고정 손절을 폴백으로 유지.
+    # 기본 False = 기존 동작(고정 손절 + ATR 스톱 병행) 유지.
+    atr_only_stop: bool = False
 
     # 由щ갭?곗떛: ?먯닔 ?섏쐞濡?諛?ㅻ굹硫?援먯껜 (Phase 2 ?먯닔 ?붿쭊怨??곕룞)
     use_rebalance_exit: bool = True

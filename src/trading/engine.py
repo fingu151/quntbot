@@ -416,6 +416,7 @@ class TradingEngine:
 
             if (
                 not state.profit_take_done
+                and not (self._exit_rules.atr_only_stop and atr_stop_price is not None)
                 and pnl_rate <= self._exit_rules.stop_loss_pct
             ):
                 logger.warning(
