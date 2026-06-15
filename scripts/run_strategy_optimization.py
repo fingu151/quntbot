@@ -56,6 +56,8 @@ EXPERIMENTAL_CANDIDATES = [
     "dynamic_topn_deep_reentry10_cash10_vol20_flow40",
     "dynamic_topn_deep_reentry10_cash10_vol20_breadth45",
     "dynamic_topn_deep_reentry10_cash10_vol20_breadth40",
+    "dynamic_topn_deep_reentry15_cash15_crash45",
+    "dynamic_topn_deep_reentry10_cash10_vol20_winner_room",
 ]
 VALID_CANDIDATES = [*DEFAULT_CANDIDATES, *EXPERIMENTAL_CANDIDATES]
 DEFAULT_WINDOWS = {
@@ -553,6 +555,57 @@ def _run_candidate(
             severe_defensive_top_n=12,
             enable_inverse_etf_hedge=False,
         )
+    if candidate == "dynamic_topn_deep_reentry15_cash15_crash45":
+        return base_backtest_func(
+            engine,
+            **common,
+            **_scoring_kwargs(base_scoring_func),
+            top_n=30,
+            rebalance_frequency="weekly",
+            baseline_cash_target=0.15,
+            enable_volatility_cash_overlay=True,
+            volatility_cash_window=20,
+            volatility_moderate_annualized=0.20,
+            volatility_severe_annualized=0.30,
+            volatility_moderate_cash_target=0.20,
+            volatility_severe_cash_target=0.35,
+            enable_crash_guard=True,
+            crash_guard_moderate_cash_target=0.45,
+            crash_guard_severe_cash_target=0.65,
+            enable_crash_guard_reentry=True,
+            crash_guard_reentry_cash_target=0.15,
+            enable_dynamic_top_n=True,
+            defensive_top_n=18,
+            severe_defensive_top_n=12,
+            enable_inverse_etf_hedge=False,
+        )
+    if candidate == "dynamic_topn_deep_reentry10_cash10_vol20_winner_room":
+        return base_backtest_func(
+            engine,
+            **common,
+            **_scoring_kwargs(base_scoring_func),
+            top_n=30,
+            rebalance_frequency="weekly",
+            baseline_cash_target=0.10,
+            enable_volatility_cash_overlay=True,
+            volatility_cash_window=20,
+            volatility_moderate_annualized=0.20,
+            volatility_severe_annualized=0.30,
+            volatility_moderate_cash_target=0.20,
+            volatility_severe_cash_target=0.35,
+            profit_take_sell_fraction=0.45,
+            post_profit_trailing_stop_pct=-0.10,
+            breakeven_stop_pct=-0.03,
+            enable_crash_guard=True,
+            crash_guard_moderate_cash_target=0.40,
+            crash_guard_severe_cash_target=0.60,
+            enable_crash_guard_reentry=True,
+            crash_guard_reentry_cash_target=0.10,
+            enable_dynamic_top_n=True,
+            defensive_top_n=18,
+            severe_defensive_top_n=12,
+            enable_inverse_etf_hedge=False,
+        )
     if candidate == "dynamic_topn_deep_defense":
         return base_backtest_func(
             engine,
@@ -607,6 +660,8 @@ def _is_base_candidate(candidate: str) -> bool:
         "dynamic_topn_deep_reentry10_cash10_vol20_flow40",
         "dynamic_topn_deep_reentry10_cash10_vol20_breadth45",
         "dynamic_topn_deep_reentry10_cash10_vol20_breadth40",
+        "dynamic_topn_deep_reentry15_cash15_crash45",
+        "dynamic_topn_deep_reentry10_cash10_vol20_winner_room",
         "dynamic_topn_deep_defense",
     }
 

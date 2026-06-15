@@ -197,7 +197,9 @@ def test_parse_args_accepts_experimental_dynamic_topn_candidates():
                 "dynamic_topn_deep_reentry10_cash10_vol20_flow45,"
                 "dynamic_topn_deep_reentry10_cash10_vol20_flow40,"
                 "dynamic_topn_deep_reentry10_cash10_vol20_breadth45,"
-                "dynamic_topn_deep_reentry10_cash10_vol20_breadth40"
+                "dynamic_topn_deep_reentry10_cash10_vol20_breadth40,"
+                "dynamic_topn_deep_reentry15_cash15_crash45,"
+                "dynamic_topn_deep_reentry10_cash10_vol20_winner_room"
             ),
         ]
     )
@@ -213,6 +215,8 @@ def test_parse_args_accepts_experimental_dynamic_topn_candidates():
         "dynamic_topn_deep_reentry10_cash10_vol20_flow40",
         "dynamic_topn_deep_reentry10_cash10_vol20_breadth45",
         "dynamic_topn_deep_reentry10_cash10_vol20_breadth40",
+        "dynamic_topn_deep_reentry15_cash15_crash45",
+        "dynamic_topn_deep_reentry10_cash10_vol20_winner_room",
     ]
 
 
@@ -236,7 +240,9 @@ def test_run_dispatches_experimental_dynamic_topn_parameters_and_cash_reserve(tm
                 "dynamic_topn_deep_reentry10_cash10_vol20_flow45,"
                 "dynamic_topn_deep_reentry10_cash10_vol20_flow40,"
                 "dynamic_topn_deep_reentry10_cash10_vol20_breadth45,"
-                "dynamic_topn_deep_reentry10_cash10_vol20_breadth40"
+                "dynamic_topn_deep_reentry10_cash10_vol20_breadth40,"
+                "dynamic_topn_deep_reentry15_cash15_crash45,"
+                "dynamic_topn_deep_reentry10_cash10_vol20_winner_room"
             ),
             "--database-url",
             f"sqlite:///{tmp_path / 'strategy.db'}",
@@ -284,3 +290,11 @@ def test_run_dispatches_experimental_dynamic_topn_parameters_and_cash_reserve(tm
     assert calls[9]["enable_price_breadth_cash_overlay"] is True
     assert calls[9]["price_breadth_moderate_threshold"] == 0.40
     assert calls[9]["price_breadth_severe_threshold"] == 0.30
+    assert calls[10]["baseline_cash_target"] == 0.15
+    assert calls[10]["crash_guard_moderate_cash_target"] == 0.45
+    assert calls[10]["crash_guard_severe_cash_target"] == 0.65
+    assert calls[10]["crash_guard_reentry_cash_target"] == 0.15
+    assert calls[11]["baseline_cash_target"] == 0.10
+    assert calls[11]["profit_take_sell_fraction"] == 0.45
+    assert calls[11]["post_profit_trailing_stop_pct"] == -0.10
+    assert calls[11]["breakeven_stop_pct"] == -0.03
