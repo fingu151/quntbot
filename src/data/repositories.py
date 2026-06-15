@@ -20,6 +20,8 @@ from src.data.models import (
     ResearchReportBrief,
     ResearchReportSignal,
     Stock,
+    TradeJournalEvent,
+    TradeJournalRun,
     utc_now,
 )
 
@@ -276,6 +278,78 @@ def upsert_research_report_briefs(session: Session, rows: Iterable[dict[str, Any
             "confidence",
         ],
     )
+
+
+def upsert_trade_journal_events(session: Session, rows: Iterable[dict[str, Any]]) -> int:
+    update_columns = [
+        "name",
+        "filled_qty",
+        "avg_fill_price",
+        "gross_amount",
+        "fee",
+        "tax",
+        "order_reason",
+        "order_status",
+        "rank",
+        "total_score",
+        "value_score",
+        "quality_score",
+        "momentum_score",
+        "yield_score",
+        "technical_score",
+        "auxiliary_score",
+        "busanstock_score",
+        "investor_flow_score",
+        "research_report_score",
+        "ordered_at",
+        "filled_at",
+        "dry_run_json",
+        "execution_report_json",
+        "raw_json",
+    ]
+    conflict_columns = ["order_source", "order_no", "ticker", "side", "trade_date"]
+    event_columns = conflict_columns + update_columns
+    prepared = [
+        {column: row.get(column) for column in event_columns}
+        for row in rows
+    ]
+    return _upsert_many(
+        session,
+        TradeJournalEvent,
+        prepared,
+        conflict_columns=conflict_columns,
+        update_columns=update_columns,
+    )
+
+
+def insert_trade_journal_run(session: Session, row: dict[str, Any]) -> TradeJournalRun:
+    prepared = {
+        "run_source": row["run_source"],
+        "trade_date": row["trade_date"],
+        "status": row["status"],
+        "recorded_count": int(row.get("recorded_count", 0) or 0),
+        "unmatched_count": int(row.get("unmatched_count", 0) or 0),
+        "dry_run_json": row.get("dry_run_json"),
+        "execution_report_json": row.get("execution_report_json"),
+        "unmatched_order_nos": row.get("unmatched_order_nos"),
+        "error_message": row.get("error_message"),
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+    run = TradeJournalRun(**prepared)
+    session.add(run)
+    session.flush()
+    return run
+
+
+def get_trade_journal_events(session: Session) -> list[TradeJournalEvent]:
+    return session.scalars(
+        select(TradeJournalEvent).order_by(
+            TradeJournalEvent.trade_date,
+            TradeJournalEvent.filled_at,
+            TradeJournalEvent.id,
+        )
+    ).all()
 
 
 def get_research_report_signals_by_keys(

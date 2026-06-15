@@ -31,6 +31,7 @@ from src.trading.macro_risk import MacroExposureAdjustment, load_macro_exposure_
 from src.trading.rebalance_policy import (
     compute_rebalance_sell_eligible_tickers,
     load_exit_entry_dates,
+    load_rebalance_protected_tickers,
 )
 from src.trading.rebalancer import (
     RebalanceOrder,
@@ -112,6 +113,7 @@ def run(
 
     held_tickers = {holding["ticker"] for holding in holdings}
     entry_dates = load_exit_entry_dates(args.exit_state_path)
+    protected_tickers = load_rebalance_protected_tickers(args.exit_state_path)
     sell_eligible_tickers = compute_rebalance_sell_eligible_tickers(
         holdings=holdings,
         buffer_tickers=buffer_tickers,
@@ -119,6 +121,7 @@ def run(
         db_engine=engine,
         as_of_date=args.as_of_date,
         min_holding_trading_days=REBALANCE.min_holding_trading_days,
+        protected_tickers=protected_tickers,
     )
     inverse_allowed = set(INVERSE_ETF.allowed_tickers)
     if inverse_allowed:
@@ -542,6 +545,15 @@ def _format_json_report(
                 "ticker": score.ticker,
                 "name": score.name,
                 "total_score": score.total_score,
+                "value_score": score.value_score,
+                "quality_score": score.quality_score,
+                "momentum_score": score.momentum_score,
+                "yield_score": score.yield_score,
+                "technical_score": score.technical_score,
+                "auxiliary_score": score.auxiliary_score,
+                "busanstock_score": score.busanstock_score,
+                "investor_flow_score": score.investor_flow_score,
+                "research_report_score": score.research_report_score,
                 "target_weight": target_weights.get(score.ticker, 0.0),
             }
             for score in target_scores

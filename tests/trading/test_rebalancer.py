@@ -303,6 +303,34 @@ def test_execute_sells_before_buys():
     assert sell_call_idx < buy_call_idx
 
 
+def test_execute_rebalance_returns_order_numbers_for_successes():
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0", "output": {"ODNO": "S1"}}
+    engine.buy.return_value = {"rt_cd": "0", "output": {"ODNO": "B1"}}
+
+    result = execute_rebalance(
+        engine,
+        [RebalanceOrder("005930", "SELL", 5, "exclude")],
+        [RebalanceOrder("000660", "BUY", 2, "include")],
+    )
+
+    assert result["order_numbers"] == {"SELL": ["S1"], "BUY": ["B1"]}
+    engine.sell.assert_called_once_with(
+        "005930",
+        qty=5,
+        price=0,
+        reason="exclude",
+        order_source="rebalance",
+    )
+    engine.buy.assert_called_once_with(
+        "000660",
+        qty=2,
+        price=0,
+        reason="include",
+        order_source="rebalance",
+    )
+
+
 def test_execute_records_failed_on_error():
     """주문 실패 시 failed 목록에 종목코드가 추가된다."""
     engine = MagicMock()

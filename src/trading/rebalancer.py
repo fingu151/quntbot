@@ -188,7 +188,7 @@ def execute_rebalance(
     expected_preflight_date: date | None = None,
     allow_buys: bool = True,
     enforce_preflight_order_match: bool = False,
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     """compute_rebalance_orders 결과를 TradingEngine을 통해 실제 주문으로 실행한다.
 
     매도를 먼저 실행해 예수금을 확보한 뒤 매수를 진행한다.
@@ -199,7 +199,7 @@ def execute_rebalance(
         buys:   매수 주문 목록
 
     Returns:
-        {"sold": [...], "bought": [...], "failed": [...]}
+        {"sold": [...], "bought": [...], "failed": [...], "order_numbers": {...}}
     """
     if preflight_report_path is not None:
         _assert_preflight_report_allows_orders(
@@ -212,7 +212,12 @@ def execute_rebalance(
             include_buy_orders=allow_buys,
         )
 
-    result: dict[str, list[str]] = {"sold": [], "bought": [], "failed": []}
+    result: dict[str, Any] = {
+        "sold": [],
+        "bought": [],
+        "failed": [],
+        "order_numbers": {"SELL": [], "BUY": []},
+    }
     if not allow_buys:
         buys = []
 
@@ -220,9 +225,16 @@ def execute_rebalance(
     sell_failed = False
     for order in sells:
         try:
-            resp = engine.sell(order.ticker, qty=order.qty, price=0)
+            resp = engine.sell(
+                order.ticker,
+                qty=order.qty,
+                price=0,
+                reason=order.reason,
+                order_source="rebalance",
+            )
             if resp.get("rt_cd") == "0":
                 result["sold"].append(order.ticker)
+                result["order_numbers"]["SELL"].append(_order_no_from_response(resp))
                 logger.info(f"[리밸런서] 매도 접수 완료: {order.ticker}")
             else:
                 result["failed"].append(order.ticker)
@@ -240,9 +252,16 @@ def execute_rebalance(
 
     for order in buys:
         try:
-            resp = engine.buy(order.ticker, qty=order.qty, price=0)
+            resp = engine.buy(
+                order.ticker,
+                qty=order.qty,
+                price=0,
+                reason=order.reason,
+                order_source="rebalance",
+            )
             if resp.get("rt_cd") == "0":
                 result["bought"].append(order.ticker)
+                result["order_numbers"]["BUY"].append(_order_no_from_response(resp))
                 logger.info(f"[리밸런서] 매수 접수 완료: {order.ticker}")
             else:
                 result["failed"].append(order.ticker)
@@ -256,6 +275,17 @@ def execute_rebalance(
         f"매수 {len(result['bought'])}건 / 실패 {len(result['failed'])}건"
     )
     return result
+
+
+def _order_no_from_response(resp: dict[str, Any]) -> str:
+    output = resp.get("output") or {}
+    if not isinstance(output, dict):
+        return ""
+    for key in ("ODNO", "odno", "order_no"):
+        value = output.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
 
 
 def _assert_preflight_report_allows_orders(

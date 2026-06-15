@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from pathlib import Path
 from unittest.mock import MagicMock
 
 
@@ -11,6 +12,43 @@ def test_parse_args_requires_confirm_token():
     assert args.as_of_date == date.today()
     assert args.top_n == 30
     assert args.workers == 1
+
+
+def test_parse_args_uses_retry_execution_report_when_default_exists(tmp_path, monkeypatch):
+    import scripts.daily_paper_run as script
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "rebalance_execution_2026-05-12.json").write_text("{}", encoding="utf-8")
+    (data_dir / "rebalance_execution_2026-05-12_retry_1.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    args = script.parse_args([
+        "--as-of-date",
+        "2026-05-12",
+        "--confirm",
+        "EXECUTE_PAPER_REBALANCE",
+    ])
+
+    assert args.execution_report_json == Path("data") / "rebalance_execution_2026-05-12_retry_2.json"
+
+
+def test_parse_args_preserves_explicit_execution_report_when_it_exists(tmp_path):
+    import scripts.daily_paper_run as script
+
+    execution_json = tmp_path / "execution.json"
+    execution_json.write_text("{}", encoding="utf-8")
+
+    args = script.parse_args([
+        "--as-of-date",
+        "2026-05-12",
+        "--execution-report-json",
+        str(execution_json),
+        "--confirm",
+        "EXECUTE_PAPER_REBALANCE",
+    ])
+
+    assert args.execution_report_json == execution_json
 
 
 def test_run_blocks_without_confirm(tmp_path):

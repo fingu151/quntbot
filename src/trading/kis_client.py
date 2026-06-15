@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
 
 import requests
@@ -16,6 +18,27 @@ def _parse_int_number(value: Any) -> int:
     if value in (None, ""):
         return 0
     return int(float(value))
+
+
+def _parse_float_number(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    return float(value)
+
+
+@dataclass(frozen=True)
+class FilledOrder:
+    order_no: str
+    ticker: str
+    name: str
+    side: str
+    ordered_qty: int
+    filled_qty: int
+    avg_fill_price: float
+    filled_amount: float
+    ordered_at: datetime | None
+    filled_at: datetime | None
+    raw: dict[str, Any]
 
 
 class KisClient:
@@ -244,6 +267,75 @@ class KisClient:
             })
         return rows
 
+    def get_daily_filled_orders(
+        self,
+        start_date: date,
+        end_date: date,
+        order_nos: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> list[FilledOrder]:
+        """Return filled PAPER stock orders from KIS daily execution history."""
+        wanted_order_nos = {str(order_no) for order_no in (order_nos or []) if order_no}
+        url = f"{self._config.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        params = {
+            "CANO": self._config.account_no,
+            "ACNT_PRDT_CD": self._config.account_product_code,
+            "INQR_STRT_DT": start_date.strftime("%Y%m%d"),
+            "INQR_END_DT": end_date.strftime("%Y%m%d"),
+            "SLL_BUY_DVSN_CD": "00",
+            "INQR_DVSN": "00",
+            "PDNO": "",
+            "CCLD_DVSN": "00",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        rows: list[FilledOrder] = []
+        for page in range(20):
+            try:
+                resp = self._session.get(
+                    url,
+                    headers=self._headers("VTTC8001R"),
+                    params=params,
+                    timeout=self._config.request_timeout_sec,
+                )
+                resp.raise_for_status()
+                raw = resp.json()
+            except Exception as exc:
+                raise RuntimeError(self._mask_sensitive(str(exc))) from exc
+            for item in raw.get("output1") or raw.get("output") or []:
+                filled = _filled_order_from_kis_row(item)
+                if filled is None:
+                    continue
+                if wanted_order_nos and filled.order_no not in wanted_order_nos:
+                    continue
+                rows.append(filled)
+            next_fk_raw = str(raw.get("ctx_area_fk100") or "")
+            next_nk_raw = str(raw.get("ctx_area_nk100") or "")
+            if raw.get("rt_cd") != "0" or not (next_fk_raw.strip() or next_nk_raw.strip()):
+                break
+            params["CTX_AREA_FK100"] = next_fk_raw
+            params["CTX_AREA_NK100"] = next_nk_raw
+            if page < 19:
+                time.sleep(0.7)
+        return rows
+
+    def _mask_sensitive(self, message: str) -> str:
+        masked = message
+        sensitive_values = (
+            self._config.account_no,
+            self._config.account_product_code,
+            self._config.app_key,
+            self._config.app_secret,
+            self._access_token,
+        )
+        for value in sensitive_values:
+            if value:
+                masked = masked.replace(value, "<KIS_SECRET>")
+        return masked
+
     def cancel_order(self, order_no: str, ticker: str, qty: int) -> dict[str, Any]:
         """미체결 주문 취소 (tr_id: VTTC0803U).
 
@@ -392,3 +484,73 @@ class KisClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+
+def _filled_order_from_kis_row(item: dict[str, Any]) -> FilledOrder | None:
+    order_no = str(_first_value(item, "odno", "ODNO", "ord_no", "ORD_NO") or "")
+    ticker = str(_first_value(item, "pdno", "PDNO", "ticker") or "")
+    side = _side_from_kis_row(item)
+    ordered_qty = _parse_int_number(_first_value(item, "ord_qty", "ORD_QTY"))
+    filled_qty = _parse_int_number(
+        _first_value(item, "tot_ccld_qty", "TOT_CCLD_QTY", "ccld_qty")
+    )
+    if not order_no or not ticker or not side or filled_qty <= 0:
+        return None
+    avg_fill_price = _parse_float_number(
+        _first_value(item, "avg_prvs", "AVG_PRVS", "avg_ccld_pric", "ccld_unpr")
+    )
+    filled_amount = _parse_float_number(
+        _first_value(item, "tot_ccld_amt", "TOT_CCLD_AMT", "ccld_amt")
+    )
+    if filled_amount <= 0 and avg_fill_price > 0:
+        filled_amount = avg_fill_price * filled_qty
+    ordered_at = _parse_kis_order_datetime(item)
+    return FilledOrder(
+        order_no=order_no,
+        ticker=ticker,
+        name=str(_first_value(item, "prdt_name", "PRDT_NAME", "name") or ""),
+        side=side,
+        ordered_qty=ordered_qty,
+        filled_qty=filled_qty,
+        avg_fill_price=avg_fill_price,
+        filled_amount=filled_amount,
+        ordered_at=ordered_at,
+        filled_at=ordered_at,
+        raw=dict(item),
+    )
+
+
+def _side_from_kis_row(item: dict[str, Any]) -> str:
+    code = str(_first_value(item, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD") or "")
+    if code == "02":
+        return "BUY"
+    if code == "01":
+        return "SELL"
+    name = str(_first_value(item, "sll_buy_dvsn_name", "SLL_BUY_DVSN_NAME") or "").upper()
+    if "BUY" in name or "매수" in name:
+        return "BUY"
+    if "SELL" in name or "매도" in name:
+        return "SELL"
+    return ""
+
+
+def _first_value(item: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _parse_kis_order_datetime(item: dict[str, Any]) -> datetime | None:
+    date_value = str(_first_value(item, "ord_dt", "ORD_DT", "ccld_dt") or "")
+    time_value = str(_first_value(item, "ord_tmd", "ORD_TMD", "ccld_tmd") or "")
+    if len(date_value) != 8:
+        return None
+    if not time_value:
+        time_value = "000000"
+    time_value = time_value.zfill(6)[:6]
+    try:
+        return datetime.strptime(f"{date_value}{time_value}", "%Y%m%d%H%M%S")
+    except ValueError:
+        return None

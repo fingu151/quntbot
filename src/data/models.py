@@ -258,6 +258,70 @@ class ResearchReportBrief(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class TradeJournalRun(Base):
+    __tablename__ = "trade_journal_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_source: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    recorded_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unmatched_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dry_run_json: Mapped[str | None] = mapped_column(Text)
+    execution_report_json: Mapped[str | None] = mapped_column(Text)
+    unmatched_order_nos: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class TradeJournalEvent(Base):
+    __tablename__ = "trade_journal_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "order_source",
+            "order_no",
+            "ticker",
+            "side",
+            "trade_date",
+            name="uq_trade_journal_source_order_ticker_side_date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    order_no: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(12), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    filled_qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    avg_fill_price: Mapped[float] = mapped_column(Float, nullable=False)
+    gross_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    fee: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    tax: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    order_reason: Mapped[str | None] = mapped_column(Text)
+    order_source: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    order_status: Mapped[str] = mapped_column(String(20), nullable=False, default="filled")
+    rank: Mapped[int | None] = mapped_column(Integer)
+    total_score: Mapped[float | None] = mapped_column(Float)
+    value_score: Mapped[float | None] = mapped_column(Float)
+    quality_score: Mapped[float | None] = mapped_column(Float)
+    momentum_score: Mapped[float | None] = mapped_column(Float)
+    yield_score: Mapped[float | None] = mapped_column(Float)
+    technical_score: Mapped[float | None] = mapped_column(Float)
+    auxiliary_score: Mapped[float | None] = mapped_column(Float)
+    busanstock_score: Mapped[float | None] = mapped_column(Float)
+    investor_flow_score: Mapped[float | None] = mapped_column(Float)
+    research_report_score: Mapped[float | None] = mapped_column(Float)
+    ordered_at: Mapped[datetime | None] = mapped_column(DateTime)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime)
+    dry_run_json: Mapped[str | None] = mapped_column(Text)
+    execution_report_json: Mapped[str | None] = mapped_column(Text)
+    raw_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class SyncRun(Base):
     __tablename__ = "sync_runs"
 

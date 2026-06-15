@@ -21,6 +21,7 @@ from src.data.database import create_tables, get_engine
 from src.trading.engine import TradingEngine
 from src.trading.kis_client import KisClient
 from src.trading.scheduler import BlockingScheduler, _load_daily_price_atr, _stop_loss_job
+from src.trading.trade_journal import TradeJournalRecorder
 
 
 RunFunction = Callable[[argparse.Namespace], int]
@@ -32,6 +33,7 @@ MONITOR_CLOSE = time(15, 20)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    argv_list = list(argv) if argv is not None else None
     parser = argparse.ArgumentParser(
         description=(
             "Run the daily PAPER flow: sync, dry-run review, readiness, execution, "
@@ -55,7 +57,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--confirm", default="")
     parser.add_argument("--force-overwrite-report", action="store_true")
     parser.add_argument("--force-market-closed", action="store_true")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv_list)
 
     if args.start_date is None:
         args.start_date = args.as_of_date - timedelta(days=30)
@@ -70,7 +72,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     if args.quote_delay_sec < 0:
         parser.error("--quote-delay-sec must be zero or greater")
     if args.execution_report_json is None:
-        args.execution_report_json = Path("data") / f"rebalance_execution_{args.as_of_date}.json"
+        execution_report_json = Path("data") / f"rebalance_execution_{args.as_of_date}.json"
+        if not args.force_overwrite_report:
+            execution_report_json = _first_available_execution_report_path(execution_report_json)
+        args.execution_report_json = execution_report_json
     return args
 
 
@@ -121,14 +126,17 @@ def run_intraday_stop_monitor(now: datetime | None = None) -> None:
     """
     db_engine = get_engine()
     create_tables(db_engine)
+    kis_client = KisClient()
+    trade_journal_recorder = TradeJournalRecorder(db_engine, kis_client)
     engine = TradingEngine(
-        KisClient(),
+        kis_client,
         atr_lookup=lambda ticker, as_of_date, window: _load_daily_price_atr(
             db_engine,
             ticker,
             as_of_date=as_of_date,
             window=window,
         ),
+        trade_journal_recorder=trade_journal_recorder,
     )
     scheduler = BlockingScheduler(timezone="Asia/Seoul")
     scheduler.add_job(
@@ -211,6 +219,8 @@ def _execute_args(args: argparse.Namespace) -> argparse.Namespace:
         "--execution-report-json",
         str(args.execution_report_json),
     ]
+    if args.database_url:
+        argv.extend(["--database-url", str(args.database_url)])
     if args.force_overwrite_report:
         argv.append("--force-overwrite-report")
     if args.force_market_closed:
@@ -233,6 +243,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
+
+
+def _first_available_execution_report_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for retry_index in range(1, 1000):
+        candidate = path.with_name(f"{path.stem}_retry_{retry_index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"could not find available execution report path for {path}")
 
 
 if __name__ == "__main__":

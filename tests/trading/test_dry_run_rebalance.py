@@ -563,6 +563,9 @@ def test_run_writes_machine_readable_json_report(tmp_path):
     assert payload["orders"][0]["side"] == "SELL"
     assert payload["orders"][1]["side"] == "BUY"
     assert payload["targets"][0]["target_weight"] == 0.15
+    assert payload["targets"][0]["value_score"] == 1.0
+    assert payload["targets"][0]["technical_score"] == 0.0
+    assert payload["targets"][0]["research_report_score"] == 0.0
     client.place_order.assert_not_called()
 
 
@@ -867,4 +870,3 @@ def test_run_sells_inverse_etf_when_hedge_risk_clears(tmp_path, monkeypatch, cap
     assert payload["inverse_etf_hedge"]["status"] == "hedge_off"
     assert payload["sell_count"] == 1
     client.place_order.assert_not_called()
-

@@ -23,6 +23,18 @@ def load_exit_entry_dates(path: Path) -> dict[str, date]:
     return entry_dates
 
 
+def load_rebalance_protected_tickers(path: Path) -> set[str]:
+    """Load tickers whose post-profit residual buckets should keep running."""
+    protected: set[str] = set()
+    for ticker, state in ExitStateStore(path).load().items():
+        if not state.profit_take_done:
+            continue
+        if state.trailing_qty <= 0 and state.breakeven_qty <= 0:
+            continue
+        protected.add(ticker)
+    return protected
+
+
 def compute_rebalance_sell_eligible_tickers(
     *,
     holdings: list[dict[str, Any]],
@@ -31,13 +43,17 @@ def compute_rebalance_sell_eligible_tickers(
     db_engine: object,
     as_of_date: date,
     min_holding_trading_days: int,
+    protected_tickers: set[str] | None = None,
 ) -> list[str]:
     """Return holdings eligible for rebalance sells after the rank buffer gate."""
     del entry_dates, db_engine, as_of_date, min_holding_trading_days
+    protected_tickers = protected_tickers or set()
     eligible: list[str] = []
     for holding in holdings:
         ticker = str(holding.get("ticker") or "")
         if not ticker or ticker in buffer_tickers:
+            continue
+        if ticker in protected_tickers:
             continue
         if int(holding.get("qty", 0) or 0) <= 0:
             continue

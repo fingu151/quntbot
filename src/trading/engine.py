@@ -35,6 +35,7 @@ class TradingEngine:
         exit_state_path: Path | None = None,
         atr_lookup: AtrLookup | None = None,
         inverse_hedge_tickers: set[str] | None = None,
+        trade_journal_recorder: Any | None = None,
     ) -> None:
         self._client = client
         self._safety = safety
@@ -51,6 +52,7 @@ class TradingEngine:
             exit_state_path or (DATA_DIR / "exit_state.json")
         )
         self._atr_lookup = atr_lookup
+        self._trade_journal_recorder = trade_journal_recorder
         # 인버스 헤지 포지션은 헤지 모듈 규칙(-7%/+12%/보유일)으로만 청산한다.
         # 일반 청산 규칙과 이중 관리되지 않도록 check_exit_rules에서 제외.
         self._inverse_hedge_tickers = (
@@ -111,7 +113,16 @@ class TradingEngine:
         except OSError as exc:
             logger.warning(f"daily anchor save failed: {exc}")
 
-    def buy(self, ticker: str, qty: int, price: int = 0, name: str = "") -> dict[str, Any]:
+    def buy(
+        self,
+        ticker: str,
+        qty: int,
+        price: int = 0,
+        name: str = "",
+        *,
+        reason: str = "",
+        order_source: str = "manual",
+    ) -> dict[str, Any]:
         """매수 주문. 일일 매수 한도 초과 시 RuntimeError.
 
         Args:
@@ -132,8 +143,16 @@ class TradingEngine:
         if result.get("rt_cd") == "0":
             self._daily_buys += 1
             logger.info(f"[엔진] 매수 접수 완료 ({self._daily_buys}/{self._safety.max_daily_buys})")
-            order_no = result.get("output", {}).get("ODNO", "")
+            order_no = self._order_no_from_response(result)
             self._notifier.notify_order("BUY", ticker, name or ticker, qty, price, order_no)
+            self._record_trade_journal_acceptance(
+                ticker=ticker,
+                side="BUY",
+                qty=qty,
+                order_no=order_no,
+                order_reason=reason,
+                order_source=order_source,
+            )
         return result
 
     def sell(
@@ -144,6 +163,8 @@ class TradingEngine:
         name: str = "",
         *,
         enforce_daily_limit: bool = True,
+        reason: str = "",
+        order_source: str = "manual",
     ) -> dict[str, Any]:
         """매도 주문. 일일 매도 한도 초과 시 RuntimeError.
 
@@ -169,9 +190,52 @@ class TradingEngine:
                 else f"{self._daily_sells}/{self._safety.max_daily_sells}, risk exit"
             )
             logger.info(f"[엔진] 매도 접수 완료 ({limit_note})")
-            order_no = result.get("output", {}).get("ODNO", "")
+            order_no = self._order_no_from_response(result)
             self._notifier.notify_order("SELL", ticker, name or ticker, qty, price, order_no)
+            self._record_trade_journal_acceptance(
+                ticker=ticker,
+                side="SELL",
+                qty=qty,
+                order_no=order_no,
+                order_reason=reason,
+                order_source=order_source,
+            )
         return result
+
+    def _order_no_from_response(self, result: dict[str, Any]) -> str:
+        output = result.get("output") or {}
+        if not isinstance(output, dict):
+            return ""
+        for key in ("ODNO", "odno", "order_no"):
+            value = output.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return ""
+
+    def _record_trade_journal_acceptance(
+        self,
+        *,
+        ticker: str,
+        side: str,
+        qty: int,
+        order_no: str,
+        order_reason: str,
+        order_source: str,
+    ) -> None:
+        if self._trade_journal_recorder is None:
+            return
+        try:
+            self._trade_journal_recorder.record_order_acceptance(
+                ticker=ticker,
+                side=side,
+                qty=qty,
+                order_no=order_no,
+                order_reason=order_reason,
+                order_source=order_source,
+                trade_date=self._today,
+            )
+        except Exception as exc:
+            logger.warning(f"trade journal recording failed: ticker={ticker}, error={exc}")
 
     # ------------------------------------------------------------------
     # 손절 / 트레일링 스톱 감시
@@ -213,6 +277,8 @@ class TradingEngine:
                     price=0,
                     name=h["name"],
                     enforce_daily_limit=False,
+                    reason="legacy_stop_loss",
+                    order_source="exit_monitor",
                 )
                 if result.get("rt_cd") == "0":
                     triggered.append(h["ticker"])
@@ -267,6 +333,8 @@ class TradingEngine:
                     price=0,
                     name=h["name"],
                     enforce_daily_limit=False,
+                    reason="legacy_trailing_stop",
+                    order_source="exit_monitor",
                 )
                 if result.get("rt_cd") == "0":
                     triggered.append(ticker)
@@ -338,13 +406,18 @@ class TradingEngine:
                     price=0,
                     name=name,
                     enforce_daily_limit=False,
+                    reason="exit_atr_stop",
+                    order_source="exit_monitor",
                 )
                 if result.get("rt_cd") == "0":
                     self._exit_state_store.delete(ticker)
                     triggered.append(ticker)
                 continue
 
-            if pnl_rate <= self._exit_rules.stop_loss_pct:
+            if (
+                not state.profit_take_done
+                and pnl_rate <= self._exit_rules.stop_loss_pct
+            ):
                 logger.warning(
                     f"[Exit full stop] {name}({ticker}) pnl={pnl_rate:.2%}, "
                     f"threshold={self._exit_rules.stop_loss_pct:.2%}. Selling full position."
@@ -356,6 +429,8 @@ class TradingEngine:
                     price=0,
                     name=name,
                     enforce_daily_limit=False,
+                    reason="exit_full_stop",
+                    order_source="exit_monitor",
                 )
                 if result.get("rt_cd") == "0":
                     self._exit_state_store.delete(ticker)
@@ -379,6 +454,8 @@ class TradingEngine:
                     price=0,
                     name=name,
                     enforce_daily_limit=False,
+                    reason="exit_profit_take",
+                    order_source="exit_monitor",
                 )
                 if result.get("rt_cd") == "0":
                     remaining_qty = max(qty - sell_qty, 0)
@@ -399,7 +476,7 @@ class TradingEngine:
 
             if state.trailing_qty > 0 and state.peak_price > 0:
                 trail_rate = (current / state.peak_price) - 1.0
-                if trail_rate <= self._exit_rules.trailing_stop_pct:
+                if trail_rate <= self._exit_rules.post_profit_trailing_stop_pct:
                     logger.warning(
                         f"[Exit trailing bucket] {name}({ticker}) "
                         f"peak={state.peak_price:,.0f}, current={current:,.0f}, "
@@ -414,6 +491,8 @@ class TradingEngine:
                         price=0,
                         name=name,
                         enforce_daily_limit=False,
+                        reason="exit_trailing_bucket",
+                        order_source="exit_monitor",
                     )
                     if result.get("rt_cd") == "0":
                         state.trailing_qty = 0
@@ -436,6 +515,8 @@ class TradingEngine:
                     price=0,
                     name=name,
                     enforce_daily_limit=False,
+                    reason="exit_breakeven_bucket",
+                    order_source="exit_monitor",
                 )
                 if result.get("rt_cd") == "0":
                     state.breakeven_qty = 0
@@ -509,6 +590,14 @@ class TradingEngine:
     def get_current_price(self, ticker: str) -> dict[str, Any]:
         return self._client.get_current_price(ticker)
 
+    def get_daily_filled_orders(
+        self,
+        start_date: date,
+        end_date: date,
+        order_nos: set[str] | None = None,
+    ) -> Any:
+        return self._client.get_daily_filled_orders(start_date, end_date, order_nos)
+
     def get_exit_state_entry_dates(self) -> dict[str, date]:
         entry_dates: dict[str, date] = {}
         for ticker, state in self._exit_state_store.load().items():
@@ -520,6 +609,16 @@ class TradingEngine:
                     f"entry_date={state.entry_date}"
                 )
         return entry_dates
+
+    def get_rebalance_protected_tickers(self) -> set[str]:
+        protected: set[str] = set()
+        for ticker, state in self._exit_state_store.load().items():
+            if (
+                state.profit_take_done
+                and (state.trailing_qty > 0 or state.breakeven_qty > 0)
+            ):
+                protected.add(ticker)
+        return protected
 
     @property
     def status(self) -> dict[str, Any]:
