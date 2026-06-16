@@ -14,7 +14,8 @@ class FactorScore:
     quality_score: float
     momentum_score: float
     yield_score: float
-    telegram_score: float
+    technical_score: float
+    auxiliary_score: float
     total_score: float
     rank: int
     busanstock_score: float = 0.0

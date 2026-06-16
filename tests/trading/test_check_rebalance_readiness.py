@@ -117,7 +117,7 @@ def test_run_blocks_when_preflight_fails(tmp_path, capsys):
     assert "preflight_error=stale report" in output
     assert (
         "next_prepare_command=.\\venv\\Scripts\\python.exe "
-        "scripts\\prepare_rebalance_for_execution.py --as-of-date 2026-05-08 --top-n 20"
+        "scripts\\prepare_rebalance_for_execution.py --as-of-date 2026-05-08 --top-n 30"
     ) in output
     assert "execution_ready=false" in output
 

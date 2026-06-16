@@ -30,6 +30,9 @@ def compute_rebalance_orders(
     previous_closes: dict[str, int | float] | None = None,
     cash: int,
     portfolio: PortfolioConfig = PORTFOLIO,
+    sell_eligible_tickers: list[str] | set[str] | None = None,
+    target_weights: dict[str, float] | None = None,
+    buy_budget_multiplier: float = 1.0,
 ) -> tuple[list[RebalanceOrder], list[RebalanceOrder]]:
     """현재 보유 종목과 목표 종목을 비교해 매도/매수 주문 목록을 반환한다.
 
@@ -47,17 +50,18 @@ def compute_rebalance_orders(
     """
     held_tickers = {h["ticker"] for h in holdings}
     target_set = set(target_tickers)
+    sell_set = set(sell_eligible_tickers) if sell_eligible_tickers is not None else held_tickers - target_set
 
     # --- 매도 대상: 보유 중이지만 목표에 없는 종목 ---
     sells: list[RebalanceOrder] = []
     expected_sell_proceeds = 0
     for h in holdings:
-        if h["ticker"] not in target_set:
+        if h["ticker"] in sell_set:
             sells.append(RebalanceOrder(
                 ticker=h["ticker"],
                 side="SELL",
                 qty=h["qty"],
-                reason=f"목표 포트폴리오에서 제외 (보유 {h['qty']}주)",
+                reason=f"rebalance sell buffer exit (holding {h['qty']} shares)",
             ))
             expected_sell_proceeds += int(h.get("current_price", 0) or 0) * int(h["qty"])
             logger.info(f"[리밸런서] 매도 예정: {h['name']}({h['ticker']}) {h['qty']}주")
@@ -69,7 +73,11 @@ def compute_rebalance_orders(
         return sells, []
 
     available_cash = cash + expected_sell_proceeds
-    per_position = available_cash / len(buy_targets)
+    weights = target_weights or {}
+    buy_budget_cash = max(0.0, available_cash * buy_budget_multiplier)
+    if weights:
+        buy_budget_cash = float(available_cash)
+    initial_buy_budget_cash = buy_budget_cash
 
     buys: list[RebalanceOrder] = []
     for ticker in buy_targets:
@@ -91,11 +99,15 @@ def compute_rebalance_orders(
             )
             continue
 
-        qty = math.floor(per_position / price)
+        if weights:
+            budget = initial_buy_budget_cash * max(weights.get(ticker, 0.0), 0.0)
+        else:
+            budget = initial_buy_budget_cash / len(buy_targets)
+        qty = math.floor(budget / price)
+        qty = min(qty, math.floor(buy_budget_cash / price))
         if portfolio.enforce_price_filter and qty <= 0:
             logger.warning(
-                f"[리밸런서] {ticker} 1주 가격({price:,}원) > "
-                f"배분 금액({per_position:,.0f}원) — 매수 건너뜀"
+                f"[rebalancer] {ticker} price {price:,} exceeds budget {budget:,.0f}; buy skipped"
             )
             continue
 
@@ -103,11 +115,56 @@ def compute_rebalance_orders(
             ticker=ticker,
             side="BUY",
             qty=qty,
-            reason=f"목표 포트폴리오 편입 (배분 {per_position:,.0f}원 / {price:,}원 = {qty}주)",
+            reason=f"target portfolio entry (budget {budget:,.0f} / {price:,} = {qty} shares)",
         ))
+        buy_budget_cash -= qty * price
         logger.info(f"[리밸런서] 매수 예정: {ticker} {qty}주 ({price:,}원)")
 
     return sells, buys
+
+
+def compute_macro_reduction_orders(
+    *,
+    holdings: list[dict[str, Any]],
+    prices: dict[str, int],
+    cash: int | float,
+    target_cash_ratio: float,
+    existing_sells: list[RebalanceOrder],
+) -> tuple[list[RebalanceOrder], list[dict[str, str]]]:
+    if target_cash_ratio <= 0:
+        return [], []
+
+    existing_sell_tickers = {order.ticker for order in existing_sells}
+    eligible: list[tuple[str, int, int]] = []
+    skipped: list[dict[str, str]] = []
+    position_value = 0.0
+    for holding in holdings:
+        ticker = str(holding.get("ticker", ""))
+        qty = int(holding.get("qty", 0) or 0)
+        if not ticker or qty <= 0 or ticker in existing_sell_tickers:
+            continue
+        price = int(prices.get(ticker) or holding.get("current_price") or 0)
+        if price <= 0:
+            skipped.append({"ticker": ticker, "reason": "missing_price"})
+            continue
+        eligible.append((ticker, qty, price))
+        position_value += qty * price
+
+    equity = float(cash) + position_value
+    if equity <= 0:
+        return [], skipped
+    target_cash = equity * min(max(target_cash_ratio, 0.0), 1.0)
+    cash_needed = target_cash - float(cash)
+    if cash_needed <= 0 or position_value <= 0:
+        return [], skipped
+
+    sell_fraction = min(1.0, cash_needed / position_value)
+    reason = f"macro_risk_reduce to {target_cash_ratio:.0%} cash target"
+    orders = [
+        RebalanceOrder(ticker, "SELL", math.floor(qty * sell_fraction), reason)
+        for ticker, qty, _ in eligible
+    ]
+    return [order for order in orders if order.qty > 0], skipped
 
 
 def is_execution_gap_too_large(
@@ -129,7 +186,9 @@ def execute_rebalance(
     *,
     preflight_report_path: str | Path | None = None,
     expected_preflight_date: date | None = None,
-) -> dict[str, list[str]]:
+    allow_buys: bool = True,
+    enforce_preflight_order_match: bool = False,
+) -> dict[str, Any]:
     """compute_rebalance_orders 결과를 TradingEngine을 통해 실제 주문으로 실행한다.
 
     매도를 먼저 실행해 예수금을 확보한 뒤 매수를 진행한다.
@@ -140,41 +199,74 @@ def execute_rebalance(
         buys:   매수 주문 목록
 
     Returns:
-        {"sold": [...], "bought": [...], "failed": [...]}
+        {"sold": [...], "bought": [...], "failed": [...], "order_numbers": {...}}
     """
     if preflight_report_path is not None:
         _assert_preflight_report_allows_orders(
             preflight_report_path,
             expected_preflight_date=expected_preflight_date,
+            enforce_buy_limit=allow_buys,
+            enforce_buy_price_checks=allow_buys,
+            expected_orders=sells + (buys if allow_buys else []),
+            enforce_order_match=enforce_preflight_order_match,
+            include_buy_orders=allow_buys,
         )
 
-    result: dict[str, list[str]] = {"sold": [], "bought": [], "failed": []}
+    result: dict[str, Any] = {
+        "sold": [],
+        "bought": [],
+        "failed": [],
+        "order_numbers": {"SELL": [], "BUY": []},
+    }
+    if not allow_buys:
+        buys = []
 
     # 매도 먼저
+    sell_failed = False
     for order in sells:
         try:
-            resp = engine.sell(order.ticker, qty=order.qty, price=0)
+            resp = engine.sell(
+                order.ticker,
+                qty=order.qty,
+                price=0,
+                reason=order.reason,
+                order_source="rebalance",
+            )
             if resp.get("rt_cd") == "0":
                 result["sold"].append(order.ticker)
+                result["order_numbers"]["SELL"].append(_order_no_from_response(resp))
                 logger.info(f"[리밸런서] 매도 접수 완료: {order.ticker}")
             else:
                 result["failed"].append(order.ticker)
+                sell_failed = True
                 logger.error(f"[리밸런서] 매도 실패: {order.ticker} → {resp.get('msg1')}")
-        except RuntimeError as e:
+        except Exception as e:
             result["failed"].append(order.ticker)
+            sell_failed = True
             logger.error(f"[리밸런서] 매도 한도 초과: {order.ticker} → {e}")
 
     # 매수
+    if sell_failed and buys:
+        logger.warning("[rebalancer] buys skipped because one or more sell orders failed")
+        buys = []
+
     for order in buys:
         try:
-            resp = engine.buy(order.ticker, qty=order.qty, price=0)
+            resp = engine.buy(
+                order.ticker,
+                qty=order.qty,
+                price=0,
+                reason=order.reason,
+                order_source="rebalance",
+            )
             if resp.get("rt_cd") == "0":
                 result["bought"].append(order.ticker)
+                result["order_numbers"]["BUY"].append(_order_no_from_response(resp))
                 logger.info(f"[리밸런서] 매수 접수 완료: {order.ticker}")
             else:
                 result["failed"].append(order.ticker)
                 logger.error(f"[리밸런서] 매수 실패: {order.ticker} → {resp.get('msg1')}")
-        except RuntimeError as e:
+        except Exception as e:
             result["failed"].append(order.ticker)
             logger.error(f"[리밸런서] 매수 한도 초과: {order.ticker} → {e}")
 
@@ -185,15 +277,44 @@ def execute_rebalance(
     return result
 
 
+def _order_no_from_response(resp: dict[str, Any]) -> str:
+    output = resp.get("output") or {}
+    if not isinstance(output, dict):
+        return ""
+    for key in ("ODNO", "odno", "order_no"):
+        value = output.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
 def _assert_preflight_report_allows_orders(
     report_path: str | Path,
     *,
     expected_preflight_date: date | None = None,
+    enforce_buy_limit: bool = True,
+    enforce_buy_price_checks: bool = True,
+    expected_orders: list[RebalanceOrder] | None = None,
+    enforce_order_match: bool = False,
+    include_buy_orders: bool = True,
 ) -> None:
     path = Path(report_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("dry_run") is not True:
         raise RuntimeError(f"preflight report is not a dry-run report: {path}")
+
+    if enforce_order_match:
+        report_orders = payload.get("orders") or []
+        if not include_buy_orders:
+            report_orders = [
+                order for order in report_orders if str(order.get("side", "")) != "BUY"
+            ]
+        actual = _order_fingerprint(report_orders)
+        expected = _order_fingerprint(expected_orders or [])
+        if actual != expected:
+            raise RuntimeError(
+                f"dry-run preflight blocked: order mismatch report={actual} expected={expected}"
+            )
 
     if expected_preflight_date is not None:
         report_date = payload.get("as_of_date")
@@ -204,7 +325,7 @@ def _assert_preflight_report_allows_orders(
             )
 
     fallback_count = int(payload.get("price_fallback_count", 0) or 0)
-    if fallback_count:
+    if enforce_buy_price_checks and fallback_count:
         tickers = [
             str(item.get("ticker", ""))
             for item in payload.get("price_fallbacks", [])
@@ -216,7 +337,7 @@ def _assert_preflight_report_allows_orders(
         )
 
     failed_count = int(payload.get("price_lookup_failed_count", 0) or 0)
-    if failed_count:
+    if enforce_buy_price_checks and failed_count:
         tickers = [str(ticker) for ticker in payload.get("price_lookup_failures", [])]
         suffix = f" tickers={tickers}" if tickers else ""
         raise RuntimeError(
@@ -224,7 +345,7 @@ def _assert_preflight_report_allows_orders(
         )
 
     buy_count = int(payload.get("buy_count", 0) or 0)
-    if buy_count > SAFETY.max_daily_buys:
+    if enforce_buy_limit and buy_count > SAFETY.max_daily_buys:
         raise RuntimeError(
             "dry-run preflight blocked: daily buy limit would be exceeded "
             f"({buy_count}/{SAFETY.max_daily_buys})"
@@ -236,3 +357,17 @@ def _assert_preflight_report_allows_orders(
             "dry-run preflight blocked: daily sell limit would be exceeded "
             f"({sell_count}/{SAFETY.max_daily_sells})"
         )
+
+
+def _order_fingerprint(orders: list[Any]) -> list[tuple[str, str, int]]:
+    fingerprint: list[tuple[str, str, int]] = []
+    for order in orders:
+        if isinstance(order, RebalanceOrder):
+            fingerprint.append((order.side, order.ticker, int(order.qty)))
+        else:
+            fingerprint.append((
+                str(order.get("side", "")),
+                str(order.get("ticker", "")),
+                int(order.get("qty", 0) or 0),
+            ))
+    return fingerprint

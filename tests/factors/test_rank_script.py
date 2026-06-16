@@ -23,11 +23,11 @@ def test_parse_args_accepts_as_of_date_top_n_and_database_url():
     assert args.database_url == "sqlite:///:memory:"
 
 
-def test_run_prints_top_ranked_factor_scores_with_telegram_diagnostics(capsys):
+def test_run_prints_top_ranked_factor_scores_with_score_breakdown(capsys):
     def fake_calculate(engine, *, as_of_date, lookback_days=None):
         return [
-            FactorScore("AAA", "Alpha", "KOSPI", as_of_date, 1.1, 0.0, 0.9, 0.5, 0.8, 2.0, 1, 0.3, -0.7),
-            FactorScore("BBB", "Beta", "KOSDAQ", as_of_date, -1.1, 0.0, -0.9, -0.5, 0.0, -2.0, 2),
+            FactorScore("AAA", "Alpha", "KOSPI", as_of_date, 1.1, 0.0, 0.9, 0.5, 0.8, 0.2, 2.0, 1, 0.3, -0.7),
+            FactorScore("BBB", "Beta", "KOSDAQ", as_of_date, -1.1, 0.0, -0.9, -0.5, 0.0, 0.0, -2.0, 2),
         ]
 
     args = parse_args(
@@ -45,12 +45,12 @@ def test_run_prints_top_ranked_factor_scores_with_telegram_diagnostics(capsys):
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert "score_count=2 telegram_scored_count=1 telegram_coverage=50.0%" in captured.out
     assert "busanstock_scored_count=1 busanstock_coverage=50.0%" in captured.out
     assert "investor_flow_scored_count=1 investor_flow_coverage=50.0%" in captured.out
     assert "research_report_scored_count=0 research_report_coverage=0.0%" in captured.out
     assert "rank=1 ticker=AAA name=Alpha total=2.0000" in captured.out
-    assert "telegram=0.8000" in captured.out
+    assert "technical=0.8000" in captured.out
+    assert "auxiliary=0.2000" in captured.out
     assert "busanstock=0.3000" in captured.out
     assert "investor_flow=-0.7000" in captured.out
     assert "research_report=0.0000" in captured.out

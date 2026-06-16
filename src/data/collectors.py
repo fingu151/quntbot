@@ -9,10 +9,11 @@ import pandas as pd
 import requests
 from loguru import logger
 from sqlalchemy import Engine
+from sqlalchemy import func, select
 
 from config import UNIVERSE
 from src.data.database import session_scope
-from src.data.models import SyncRun, utc_now
+from src.data.models import Stock, SyncRun, utc_now
 from src.data.repositories import (
     deactivate_stocks_not_in,
     upsert_daily_prices,
@@ -32,7 +33,7 @@ PYKRX_REQUEST_TIMEOUT_SEC = 15
 
 
 class MarketDataProvider(Protocol):
-    def get_universe(self) -> list[dict[str, Any]]:
+    def get_universe(self, target_date: date | None = None) -> list[dict[str, Any]]:
         ...
 
     def get_daily_prices(self, ticker: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
@@ -51,6 +52,7 @@ class PykrxMarketDataProvider:
         from pykrx import stock
 
         self.stock = stock
+        self._known_etf_tickers: set[str] = set()
 
     def _resolve_recent_business_date(self) -> str:
         # When date=None, some pykrx versions fail to find a business day if the
@@ -88,7 +90,77 @@ class PykrxMarketDataProvider:
                     UNIVERSE.kosdaq_top_n, UNIVERSE.liquidity_lookback_days, max_lookback_days,
                 )
             )
+        if getattr(UNIVERSE, "use_etf", False):
+            rows.extend(
+                self._build_etf_universe(
+                    resolved_date,
+                    UNIVERSE.etf_top_n,
+                    UNIVERSE.liquidity_lookback_days,
+                    max_lookback_days,
+                )
+            )
         return rows
+
+    def _build_etf_universe(
+        self,
+        target_date: date,
+        top_n: int,
+        lookback_days: int,
+        max_lookback_days: int,
+    ) -> list[dict[str, Any]]:
+        business_dates = self._get_recent_business_dates(target_date, lookback_days, max_lookback_days)
+        if not business_dates:
+            return []
+        try:
+            tickers = list(self.stock.get_etf_ticker_list(_format_date(business_dates[0])))
+        except Exception as exc:
+            logger.warning(f"ETF 종목 목록 조회 실패 ({business_dates[0]}): {exc}")
+            return []
+
+        trading_value_sum: dict[str, float] = {}
+        days_counted: dict[str, int] = {}
+        for ticker in tickers:
+            for business_date in business_dates:
+                try:
+                    frame = self.stock.get_etf_ohlcv_by_date(
+                        _format_date(business_date),
+                        _format_date(business_date),
+                        ticker,
+                    )
+                except Exception as exc:
+                    logger.warning(f"ETF OHLCV 조회 실패 ({ticker}, {business_date}): {exc}")
+                    continue
+                if frame.empty or "거래대금" not in frame.columns:
+                    continue
+                value = frame.iloc[-1]["거래대금"]
+                if pd.notna(value) and float(value) > 0:
+                    trading_value_sum[ticker] = trading_value_sum.get(ticker, 0.0) + float(value)
+                    days_counted[ticker] = days_counted.get(ticker, 0) + 1
+
+        eligible = [
+            (ticker, trading_value_sum[ticker] / max(days_counted.get(ticker, 1), 1))
+            for ticker in trading_value_sum
+            if trading_value_sum[ticker] / max(days_counted.get(ticker, 1), 1)
+            >= UNIVERSE.min_avg_trading_value
+        ]
+        eligible.sort(key=lambda item: item[1], reverse=True)
+        result = []
+        for ticker, _ in eligible[:top_n]:
+            try:
+                name = self.stock.get_etf_ticker_name(ticker)
+            except Exception:
+                name = ticker
+            self._known_etf_tickers.add(ticker)
+            result.append(
+                {
+                    "ticker": ticker,
+                    "name": name,
+                    "market": "ETF",
+                    "instrument_type": "ETF",
+                    "is_active": True,
+                }
+            )
+        return result
 
     def _build_market_universe(
         self,
@@ -242,17 +314,26 @@ class PykrxMarketDataProvider:
         return result
 
     def get_daily_prices(self, ticker: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
-        frame = self.stock.get_market_ohlcv_by_date(
-            _format_date(start_date),
-            _format_date(end_date),
-            ticker,
-            adjusted=True,
-        )
+        if ticker in getattr(self, "_known_etf_tickers", set()):
+            frame = self.stock.get_etf_ohlcv_by_date(
+                _format_date(start_date),
+                _format_date(end_date),
+                ticker,
+            )
+        else:
+            frame = self.stock.get_market_ohlcv_by_date(
+                _format_date(start_date),
+                _format_date(end_date),
+                ticker,
+                adjusted=True,
+            )
         if frame.empty:
             return []
         return _price_frame_to_rows(ticker, frame)
 
     def get_fundamentals(self, ticker: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
+        if ticker in getattr(self, "_known_etf_tickers", set()):
+            return []
         frame = self.stock.get_market_fundamental_by_date(
             _format_date(start_date),
             _format_date(end_date),
@@ -263,6 +344,8 @@ class PykrxMarketDataProvider:
         return _fundamental_frame_to_rows(ticker, frame)
 
     def get_investor_flows(self, ticker: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
+        if ticker in getattr(self, "_known_etf_tickers", set()):
+            return []
         frame = self.stock.get_market_trading_value_by_date(
             _format_date(start_date),
             _format_date(end_date),
@@ -281,6 +364,8 @@ def sync_phase1_data(
     start_date: date,
     end_date: date,
     max_workers: int = 5,
+    universe_date: date | None = None,
+    deactivate_missing: bool = True,
 ) -> dict[str, int]:
     error: Exception | None = None
     result: dict[str, int] | None = None
@@ -290,11 +375,17 @@ def sync_phase1_data(
         session.flush()
 
         try:
-            universe = provider.get_universe()
+            universe = (
+                provider.get_universe(target_date=universe_date)
+                if universe_date is not None
+                else provider.get_universe()
+            )
             if not universe:
                 raise RuntimeError("no universe rows collected")
+            _validate_universe_markets_before_deactivation(session, universe)
             universe_count = upsert_stocks(session, universe)
-            deactivate_stocks_not_in(session, [row["ticker"] for row in universe])
+            if deactivate_missing:
+                deactivate_stocks_not_in(session, [row["ticker"] for row in universe])
 
             tickers = [row["ticker"] for row in universe]
             price_rows, fundamental_rows, investor_flow_rows = _fetch_market_data_parallel(
@@ -333,6 +424,34 @@ def sync_phase1_data(
     if result is None:
         raise RuntimeError("sync finished without a result")
     return result
+
+
+def _validate_universe_markets_before_deactivation(session: Any, universe: list[dict[str, Any]]) -> None:
+    collected_markets = {str(row.get("market") or "").upper() for row in universe}
+    expected_markets = []
+    if getattr(UNIVERSE, "use_kospi", False):
+        expected_markets.append("KOSPI")
+    if getattr(UNIVERSE, "use_kosdaq", False):
+        expected_markets.append("KOSDAQ")
+
+    missing_existing_markets = []
+    for market in expected_markets:
+        if market in collected_markets:
+            continue
+        existing_count = session.scalar(
+            select(func.count()).select_from(Stock).where(
+                Stock.is_active.is_(True),
+                Stock.market == market,
+            )
+        ) or 0
+        if int(existing_count) > 0:
+            missing_existing_markets.append(market)
+
+    if missing_existing_markets:
+        missing = ", ".join(missing_existing_markets)
+        raise RuntimeError(
+            f"partial universe rows collected: missing active market rows for {missing}"
+        )
 
 
 def _fetch_market_data_parallel(

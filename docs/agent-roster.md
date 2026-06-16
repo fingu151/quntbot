@@ -486,17 +486,14 @@ Verification:
 
 ### Signal Agent
 
-Use for Telegram or Busanstock collection, parsing, scoring inputs, and channel
-archive behavior.
+Use for Busanstock, research-report, and other non-Telegram scoring inputs.
 
 Responsibilities:
-- Preserve raw-message parsing rules.
-- Keep network/API calls isolated behind readers.
-- Verify parser behavior with representative fixtures before live channel checks.
+- Preserve raw-source parsing rules.
+- Keep network/API calls isolated behind readers or collectors.
+- Verify parser behavior with representative fixtures before live source checks.
 
 Primary files:
-- `src/signals/telegram_parser.py`
-- `src/signals/telegram_reader.py`
 - `src/signals/busanstock_parser.py`
 - `src/signals/busanstock_reader.py`
 - `tests/signals/`
@@ -594,7 +591,7 @@ summaries, and concise research brief drafts.
 Responsibilities:
 - Summarize material developments before the trading day.
 - Separate actionable events from routine noise.
-- Tie Telegram, Busanstock, DART, KRX, DB, and report facts back to source
+- Tie Busanstock, DART, KRX, DB, and report facts back to source
   locators.
 - Treat market-intel feeds as read-only context that supports human review, not
   as an order trigger or final recommendation.
@@ -602,9 +599,7 @@ Responsibilities:
 - Produce analyst work product for review, not final investment advice.
 
 Primary files and data:
-- `src/signals/telegram_parser.py`
 - `src/signals/busanstock_parser.py`
-- `scripts/smoke_test_telegram_signals.py`
 - `scripts/smoke_test_busanstock_signals.py`
 - `data/quntbot.db`
 - `progress.md`

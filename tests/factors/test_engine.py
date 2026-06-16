@@ -162,6 +162,66 @@ def test_calculate_factor_scores_ranks_value_and_momentum_candidates():
     assert scores[0].yield_score > scores[-1].yield_score
 
 
+def test_factor_score_contract_has_no_telegram_score_and_uses_100_point_budget():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    as_of_date = seed_factor_data(engine)
+
+    raw = factor_engine._load_factor_inputs(engine, as_of_date=as_of_date, lookback_days=1)
+    scores = factor_engine.calculate_factor_scores_from_df(
+        raw,
+        as_of_date=as_of_date,
+        busanstock_signals={"AAA": 1.0},
+        investor_flow_signals={"AAA": 1.0},
+        research_report_signals={"AAA": 1.0},
+        apply_buy_filters=False,
+    )
+
+    top = scores[0]
+    assert not hasattr(top, "telegram_score")
+    assert 0.0 <= top.total_score <= 100.0
+    assert top.total_score == pytest.approx(
+        top.value_score
+        + top.quality_score
+        + top.momentum_score
+        + top.yield_score
+        + top.technical_score
+        + top.auxiliary_score
+    )
+
+
+def test_technical_score_contributes_points_without_requiring_old_filter_pass():
+    closes = [100 - (idx * 0.1) for idx in range(80)]
+    raw = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "name": "Technically Weak But Not Extreme",
+                "market": "KOSPI",
+                "per": 10,
+                "pbr": 1,
+                "eps": 100,
+                "bps": 1000,
+                "div": 1,
+                "roe": 0.10,
+                "operating_margin": 0.05,
+                "debt_ratio": 1.0,
+                "recent_closes": closes,
+                "recent_volumes": [1000.0] * 80,
+                "momentum_return": -0.1,
+            },
+        ]
+    )
+
+    scores = factor_engine.calculate_factor_scores_from_df(
+        raw,
+        as_of_date=date(2026, 5, 8),
+    )
+
+    assert [score.ticker for score in scores] == ["AAA"]
+    assert 0.0 <= scores[0].technical_score < factor_engine.FACTOR.technical_points
+
+
 def test_calculate_factor_scores_applies_busanstock_raw_score_as_small_overlay():
     engine = get_engine("sqlite:///:memory:")
     create_tables(engine)
@@ -183,19 +243,12 @@ def test_calculate_factor_scores_applies_busanstock_raw_score_as_small_overlay()
     before = {score.ticker: score for score in without_signal}
     after = {score.ticker: score for score in with_signal}
     assert after["BBB"].busanstock_score == 1.0
-    weight_sum = (
-        factor_engine.FACTOR.value_weight
-        + factor_engine.FACTOR.quality_weight
-        + factor_engine.FACTOR.momentum_weight
-        + factor_engine.FACTOR.yield_weight
-        + factor_engine.FACTOR.telegram_weight
-        + factor_engine.FACTOR.busanstock_weight
-        + factor_engine.FACTOR.investor_flow_weight
-        + factor_engine.FACTOR.research_report_weight
+    expected_delta = (
+        factor_engine.FACTOR.auxiliary_points
+        * factor_engine.FACTOR.busanstock_auxiliary_share
     )
-    assert after["BBB"].total_score == pytest.approx(before["BBB"].total_score + (
-        factor_engine.FACTOR.busanstock_weight * 100.0 / weight_sum
-    ))
+    assert after["BBB"].auxiliary_score == pytest.approx(expected_delta)
+    assert after["BBB"].total_score == pytest.approx(before["BBB"].total_score + expected_delta)
 
 
 def test_calculate_factor_scores_applies_investor_flow_raw_score_as_small_overlay():
@@ -219,19 +272,12 @@ def test_calculate_factor_scores_applies_investor_flow_raw_score_as_small_overla
     before = {score.ticker: score for score in without_signal}
     after = {score.ticker: score for score in with_signal}
     assert after["BBB"].investor_flow_score == -1.0
-    weight_sum = (
-        factor_engine.FACTOR.value_weight
-        + factor_engine.FACTOR.quality_weight
-        + factor_engine.FACTOR.momentum_weight
-        + factor_engine.FACTOR.yield_weight
-        + factor_engine.FACTOR.telegram_weight
-        + factor_engine.FACTOR.busanstock_weight
-        + factor_engine.FACTOR.investor_flow_weight
-        + factor_engine.FACTOR.research_report_weight
+    expected_delta = -(
+        factor_engine.FACTOR.auxiliary_points
+        * factor_engine.FACTOR.investor_flow_auxiliary_share
     )
-    assert after["BBB"].total_score == pytest.approx(before["BBB"].total_score - (
-        factor_engine.FACTOR.investor_flow_weight * 100.0 / weight_sum
-    ))
+    assert after["BBB"].auxiliary_score == pytest.approx(expected_delta)
+    assert after["BBB"].total_score == pytest.approx(before["BBB"].total_score + expected_delta)
 
 
 def test_calculate_factor_scores_applies_research_report_score_as_small_overlay():
@@ -254,20 +300,13 @@ def test_calculate_factor_scores_applies_research_report_score_as_small_overlay(
 
     before = {score.ticker: score for score in without_report}
     after = {score.ticker: score for score in with_report}
-    weight_sum = (
-        factor_engine.FACTOR.value_weight
-        + factor_engine.FACTOR.quality_weight
-        + factor_engine.FACTOR.momentum_weight
-        + factor_engine.FACTOR.yield_weight
-        + factor_engine.FACTOR.telegram_weight
-        + factor_engine.FACTOR.busanstock_weight
-        + factor_engine.FACTOR.investor_flow_weight
-        + factor_engine.FACTOR.research_report_weight
-    )
     assert after["BBB"].research_report_score == 1.0
-    assert after["BBB"].total_score == pytest.approx(before["BBB"].total_score + (
-        factor_engine.FACTOR.research_report_weight * 100.0 / weight_sum
-    ))
+    expected_delta = (
+        factor_engine.FACTOR.auxiliary_points
+        * factor_engine.FACTOR.research_report_auxiliary_share
+    )
+    assert after["BBB"].auxiliary_score == pytest.approx(expected_delta)
+    assert after["BBB"].total_score == pytest.approx(before["BBB"].total_score + expected_delta)
 
 
 def test_calculate_factor_scores_excludes_stocks_without_required_data():
@@ -439,6 +478,7 @@ def test_quality_score_ignores_future_published_metrics():
         )
 
     raw = factor_engine._load_factor_inputs(engine, as_of_date=as_of_date, lookback_days=1)
+    raw_by_ticker = raw.set_index("ticker")
     scores = factor_engine.calculate_factor_scores_from_df(
         raw,
         as_of_date=as_of_date,
@@ -446,7 +486,10 @@ def test_quality_score_ignores_future_published_metrics():
     )
     score_by_ticker = {score.ticker: score for score in scores}
 
-    assert score_by_ticker["AAA"].quality_score < 5.0
+    assert raw_by_ticker.loc["AAA", "roe"] == pytest.approx(0.15)
+    assert raw_by_ticker.loc["AAA", "operating_margin"] == pytest.approx(0.10)
+    assert raw_by_ticker.loc["AAA", "debt_ratio"] == pytest.approx(0.50)
+    assert score_by_ticker["AAA"].quality_score > score_by_ticker["CCC"].quality_score
 
 
 def test_quality_score_ignores_null_published_at_even_after_quarter_end_plus_45_days():
@@ -802,7 +845,7 @@ def test_technical_filter_keeps_candidate_with_three_of_four_conditions():
     assert [score.ticker for score in scores] == ["AAA"]
 
 
-def test_technical_filter_excludes_candidate_with_two_or_fewer_conditions():
+def test_technical_score_keeps_weak_candidate_but_awards_few_points():
     closes = [100 - (idx * 0.1) for idx in range(80)]
     raw = pd.DataFrame(
         [
@@ -829,4 +872,5 @@ def test_technical_filter_excludes_candidate_with_two_or_fewer_conditions():
         as_of_date=date(2026, 5, 8),
     )
 
-    assert scores == []
+    assert [score.ticker for score in scores] == ["AAA"]
+    assert scores[0].technical_score < factor_engine.FACTOR.technical_points / 2

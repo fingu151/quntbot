@@ -13,12 +13,15 @@ from src.data.models import (
     DailyPrice,
     Fundamental,
     InvestorFlow,
+    MacroIndicatorRelease,
+    MarketIndexPrice,
     QualityMetric,
     ResearchReportAnalysis,
     ResearchReportBrief,
     ResearchReportSignal,
     Stock,
-    TelegramSignal,
+    TradeJournalEvent,
+    TradeJournalRun,
     utc_now,
 )
 
@@ -64,12 +67,16 @@ def _upsert_many(
 
 
 def upsert_stocks(session: Session, rows: Iterable[dict[str, Any]]) -> int:
+    prepared = [
+        {**row, "instrument_type": row.get("instrument_type", "COMMON_STOCK")}
+        for row in rows
+    ]
     return _upsert_many(
         session,
         Stock,
-        rows,
+        prepared,
         conflict_columns=["ticker"],
-        update_columns=["name", "market", "is_active"],
+        update_columns=["name", "market", "instrument_type", "is_active"],
     )
 
 
@@ -100,6 +107,66 @@ def upsert_daily_prices(session: Session, rows: Iterable[dict[str, Any]]) -> int
             "market_cap",
         ],
     )
+
+
+def upsert_market_index_prices(session: Session, rows: Iterable[dict[str, Any]]) -> int:
+    return _upsert_many(
+        session,
+        MarketIndexPrice,
+        rows,
+        conflict_columns=["symbol", "date"],
+        update_columns=["open", "high", "low", "close", "volume"],
+    )
+
+
+def upsert_macro_indicator_releases(session: Session, rows: Iterable[dict[str, Any]]) -> int:
+    return _upsert_many(
+        session,
+        MacroIndicatorRelease,
+        rows,
+        conflict_columns=["indicator", "period_date", "release_date"],
+        update_columns=[
+            "value",
+            "previous_value",
+            "unit",
+            "source",
+            "source_url",
+            "impact_rule",
+            "importance",
+        ],
+    )
+
+
+def get_recent_macro_indicator_releases(
+    session: Session,
+    as_of_date: date,
+    *,
+    lookback_days: int = 14,
+) -> list[dict[str, Any]]:
+    start_date = as_of_date - timedelta(days=lookback_days)
+    rows = session.scalars(
+        select(MacroIndicatorRelease)
+        .where(
+            MacroIndicatorRelease.release_date >= start_date,
+            MacroIndicatorRelease.release_date <= as_of_date,
+        )
+        .order_by(MacroIndicatorRelease.release_date, MacroIndicatorRelease.indicator)
+    ).all()
+    return [
+        {
+            "indicator": row.indicator,
+            "period_date": row.period_date,
+            "release_date": row.release_date,
+            "value": row.value,
+            "previous_value": row.previous_value,
+            "unit": row.unit,
+            "source": row.source,
+            "source_url": row.source_url,
+            "impact_rule": row.impact_rule,
+            "importance": row.importance,
+        }
+        for row in rows
+    ]
 
 
 def upsert_fundamentals(session: Session, rows: Iterable[dict[str, Any]]) -> int:
@@ -213,6 +280,78 @@ def upsert_research_report_briefs(session: Session, rows: Iterable[dict[str, Any
     )
 
 
+def upsert_trade_journal_events(session: Session, rows: Iterable[dict[str, Any]]) -> int:
+    update_columns = [
+        "name",
+        "filled_qty",
+        "avg_fill_price",
+        "gross_amount",
+        "fee",
+        "tax",
+        "order_reason",
+        "order_status",
+        "rank",
+        "total_score",
+        "value_score",
+        "quality_score",
+        "momentum_score",
+        "yield_score",
+        "technical_score",
+        "auxiliary_score",
+        "busanstock_score",
+        "investor_flow_score",
+        "research_report_score",
+        "ordered_at",
+        "filled_at",
+        "dry_run_json",
+        "execution_report_json",
+        "raw_json",
+    ]
+    conflict_columns = ["order_source", "order_no", "ticker", "side", "trade_date"]
+    event_columns = conflict_columns + update_columns
+    prepared = [
+        {column: row.get(column) for column in event_columns}
+        for row in rows
+    ]
+    return _upsert_many(
+        session,
+        TradeJournalEvent,
+        prepared,
+        conflict_columns=conflict_columns,
+        update_columns=update_columns,
+    )
+
+
+def insert_trade_journal_run(session: Session, row: dict[str, Any]) -> TradeJournalRun:
+    prepared = {
+        "run_source": row["run_source"],
+        "trade_date": row["trade_date"],
+        "status": row["status"],
+        "recorded_count": int(row.get("recorded_count", 0) or 0),
+        "unmatched_count": int(row.get("unmatched_count", 0) or 0),
+        "dry_run_json": row.get("dry_run_json"),
+        "execution_report_json": row.get("execution_report_json"),
+        "unmatched_order_nos": row.get("unmatched_order_nos"),
+        "error_message": row.get("error_message"),
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+    run = TradeJournalRun(**prepared)
+    session.add(run)
+    session.flush()
+    return run
+
+
+def get_trade_journal_events(session: Session) -> list[TradeJournalEvent]:
+    return session.scalars(
+        select(TradeJournalEvent).order_by(
+            TradeJournalEvent.trade_date,
+            TradeJournalEvent.filled_at,
+            TradeJournalEvent.id,
+        )
+    ).all()
+
+
 def get_research_report_signals_by_keys(
     session: Session,
     keys: Iterable[tuple[date, str, str, str]],
@@ -233,28 +372,6 @@ def get_research_report_signals_by_keys(
         ]
         rows.extend(session.scalars(select(ResearchReportSignal).where(or_(*clauses))).all())
     return rows
-
-
-def upsert_telegram_signals(session: Session, rows: Iterable[dict[str, Any]]) -> int:
-    return _upsert_many(
-        session,
-        TelegramSignal,
-        rows,
-        conflict_columns=["message_date", "ticker"],
-        update_columns=["signal_type", "star_rating", "raw_score", "target_price", "message_id"],
-    )
-
-
-def replace_telegram_signals_for_date(
-    session: Session,
-    message_date: date,
-    rows: Iterable[dict[str, Any]],
-) -> int:
-    prepared = list(rows)
-    if not prepared:
-        return 0
-    session.execute(delete(TelegramSignal).where(TelegramSignal.message_date == message_date))
-    return upsert_telegram_signals(session, prepared)
 
 
 def upsert_busanstock_signals(session: Session, rows: Iterable[dict[str, Any]]) -> int:
@@ -394,21 +511,6 @@ def get_recent_research_report_scores(
         if score != 0.0:
             scores[ticker] = score
     return scores
-
-
-def get_latest_telegram_signals(session: Session, as_of_date: date) -> dict[str, float]:
-    """Return {ticker: raw_score} for the most recent message on or before as_of_date."""
-    latest_date = session.scalar(
-        select(func.max(TelegramSignal.message_date)).where(
-            TelegramSignal.message_date <= as_of_date
-        )
-    )
-    if latest_date is None:
-        return {}
-    rows = session.scalars(
-        select(TelegramSignal).where(TelegramSignal.message_date == latest_date)
-    ).all()
-    return {row.ticker: row.raw_score for row in rows}
 
 
 def count_rows(session: Session) -> dict[str, int]:

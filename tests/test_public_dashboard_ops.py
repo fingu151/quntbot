@@ -106,6 +106,8 @@ def test_dashboard_start_script_exposes_host_and_hidden_refresh_loop():
     assert "-WindowStyle Hidden" in script
     assert "PYTHONIOENCODING" in script
     assert "public_dashboard_streamlit.log" in script
+    assert '[string]$RefreshedThrough = ""' in script
+    assert "2026-05-15" not in script
 
 
 def test_refresh_script_logs_dashboard_ops_status_after_successful_refresh():
@@ -118,8 +120,18 @@ def test_refresh_script_logs_dashboard_ops_status_after_successful_refresh():
     assert "function Invoke-LoggedProcess" in script
     assert "RedirectStandardOutput" in script
     assert "PYTHONIOENCODING" in script
+    assert "function Get-KstTodayString" in script
+    assert "if (-not $RefreshedThrough)" in script
+    assert "2026-05-15" not in script
     assert "Public dashboard freshness check needs attention" in script
     assert "recommended_action" in Path("scripts/public_dashboard_ops.py").read_text(encoding="utf-8")
+
+
+def test_dashboard_batch_start_does_not_pin_research_date():
+    script = Path("scripts/start_public_dashboard_with_refresh.bat").read_text(encoding="utf-8")
+
+    assert "-RefreshedThrough" not in script
+    assert "2026-05-15" not in script
 
 
 def test_startup_task_script_registers_logon_task():

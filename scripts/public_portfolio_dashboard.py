@@ -105,11 +105,11 @@ def load_research_report_briefs(
 ) -> dict[str, Any]:
     """Load read-only research report analysis rows for the public dashboard."""
     try:
-        from sqlalchemy import select
+        from sqlalchemy import func, select
 
         from config import DATABASE_URL
         from src.data.database import get_engine, session_scope
-        from src.data.models import ResearchReportBrief
+        from src.data.models import ResearchReportBrief, ResearchReportSignal
 
         engine = (engine_factory or get_engine)(database_url or DATABASE_URL)
         with session_scope(engine) as session:
@@ -122,6 +122,16 @@ def load_research_report_briefs(
                 .limit(max(1, int(limit)))
             )
             rows = list(session.scalars(statement).all())
+            latest_brief_date = session.scalar(select(func.max(ResearchReportBrief.report_date)))
+            latest_signal_date = session.scalar(select(func.max(ResearchReportSignal.report_date)))
+            brief_signal_ids = select(ResearchReportBrief.report_signal_id).where(
+                ResearchReportBrief.report_signal_id.is_not(None)
+            )
+            missing_brief_count = session.scalar(
+                select(func.count())
+                .select_from(ResearchReportSignal)
+                .where(ResearchReportSignal.id.not_in(brief_signal_ids))
+            ) or 0
     except Exception as exc:
         return {"status": "invalid", "error": str(exc), "rows": []}
 
@@ -130,7 +140,13 @@ def load_research_report_briefs(
 
     return {
         "status": "ok",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "rows": dashboard_rows,
+        "freshness": {
+            "latest_brief_date": str(latest_brief_date or ""),
+            "latest_signal_date": str(latest_signal_date or ""),
+            "missing_brief_count": int(missing_brief_count),
+        },
     }
 
 
@@ -348,8 +364,8 @@ def _best_research_field_value(rows: list[dict[str, Any]], field: str) -> str:
         row, value = max(
             direct_candidates,
             key=lambda item: (
-                _research_field_value_score(field, item[1]),
                 _quality_rank(item[0]),
+                _research_field_value_score(field, item[1]),
                 _to_float(item[0].get("confidence")),
                 str(item[0].get("report_date") or ""),
             ),
@@ -367,8 +383,8 @@ def _best_research_field_value(rows: list[dict[str, Any]], field: str) -> str:
     row, value = max(
         candidates,
         key=lambda item: (
-            _research_field_value_score(field, item[1]),
             _quality_rank(item[0]),
+            _research_field_value_score(field, item[1]),
             _to_float(item[0].get("confidence")),
             str(item[0].get("report_date") or ""),
         ),
@@ -504,9 +520,15 @@ def build_ticker_research_briefs(
     for ticker, ticker_rows in by_ticker.items():
         sorted_rows = sorted(ticker_rows, key=_ticker_brief_row_key, reverse=True)
         latest = sorted_rows[0]
+        primary = _primary_ticker_brief_row(sorted_rows)
         best_quality_row = max(
             sorted_rows,
             key=lambda row: (_quality_rank(row), _to_float(row.get("confidence"))),
+        )
+        headline = (
+            _first_report_text(primary.get("summary"), primary.get("title"))
+            or _first_report_text(latest.get("summary"), latest.get("title"))
+            or "명시적 내용 없음"
         )
         sections = {
             "stock_view": _best_research_field_value(sorted_rows, "buy_thesis"),
@@ -525,8 +547,8 @@ def build_ticker_research_briefs(
             {
                 "ticker": ticker,
                 "latest_report_date": str(latest.get("report_date") or ""),
-                "opinion": str(latest.get("investment_opinion") or ""),
-                "headline": str(latest.get("summary") or latest.get("title") or ""),
+                "opinion": str(primary.get("investment_opinion") or latest.get("investment_opinion") or ""),
+                "headline": headline,
                 "sections": sections,
                 "quality": {
                     "source_quality": str(best_quality_row.get("body_text_status") or ""),
@@ -1007,6 +1029,7 @@ def build_research_supplement_needs(
     artifact: dict[str, Any],
     positions: list[dict[str, Any]],
     *,
+    queue_result: dict[str, Any] | None = None,
     now: datetime | None = None,
     stale_days: int = 45,
 ) -> list[dict[str, Any]]:
@@ -1022,6 +1045,9 @@ def build_research_supplement_needs(
         now=now,
         stale_days=stale_days,
     )
+    action_by_ticker = {}
+    if queue_result and queue_result.get("status") == "ok":
+        action_by_ticker = dict(queue_result.get("action_by_ticker") or {})
     needs: list[dict[str, Any]] = []
     for ticker in quality_report.get("portfolio_missing", []):
         needs.append(
@@ -1041,6 +1067,8 @@ def build_research_supplement_needs(
     for issue in quality_report.get("issues", []):
         ticker = str(issue.get("ticker") or "")
         if portfolio_tickers and ticker not in portfolio_tickers:
+            continue
+        if action_by_ticker.get(ticker) == "latest_report_not_found":
             continue
         needs.append(
             {
@@ -1096,6 +1124,21 @@ def _ticker_brief_row_key(row: dict[str, Any]) -> tuple[str, int, float]:
         str(row.get("report_date") or ""),
         _quality_rank(row),
         _to_float(row.get("confidence")),
+    )
+
+
+def _primary_ticker_brief_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return max(
+        rows,
+        key=lambda row: (
+            _quality_rank(row),
+            _research_field_value_score(
+                "buy_thesis",
+                _first_report_text(row.get("summary"), row.get("title"), row.get("buy_thesis")),
+            ),
+            _to_float(row.get("confidence")),
+            str(row.get("report_date") or ""),
+        ),
     )
 
 
@@ -1259,7 +1302,7 @@ def _ensure_equity_curve(snapshot: dict[str, Any]) -> list[float]:
         return [_to_float(v) for v in curve]
     # synthesize from current total + a deterministic random walk
     summary = snapshot.get("summary") or {}
-    end = _to_float(summary.get("total_market_value"))
+    end = _to_float(summary.get("total_asset_value") or summary.get("total_market_value"))
     cost = _to_float(summary.get("total_cost")) or end
     if not end:
         return [0.0] * 30
@@ -1533,7 +1576,7 @@ header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
 .sk-head {{ display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); font-size: 10.5px; color: var(--tx-2); text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 4px; }}
 .sk-head .vals {{ color: var(--tx-1); }}
 
-.hero-substats {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }}
+.hero-substats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }}
 .ss {{ display: flex; flex-direction: column; gap: 2px; }}
 .ss .lbl {{ font-family: var(--mono); font-size: 10px; color: var(--tx-3); text-transform: uppercase; letter-spacing: 0.12em; }}
 .ss .val {{ font-family: var(--mono); font-size: 16px; color: var(--tx-0); font-variant-numeric: tabular-nums; }}
@@ -1752,12 +1795,20 @@ def _hero_html(snapshot: dict[str, Any]) -> str:
     summary = snapshot.get("summary") or {}
     positions = snapshot.get("positions") or []
     equity = _ensure_equity_curve(snapshot)
+    cash = snapshot.get("cash") or {}
+    realized = snapshot.get("realized") or {}
 
-    nav_value = _to_float(summary.get("total_market_value"))
+    stock_market_value = _to_float(summary.get("stock_market_value") or summary.get("total_market_value"))
+    cash_balance = _to_float(summary.get("cash_balance") if summary.get("cash_balance") is not None else cash.get("available"))
+    nav_value = _to_float(summary.get("total_asset_value")) or (stock_market_value + cash_balance)
     pl = _to_float(summary.get("total_profit_loss"))
     pl_rate = _to_float(summary.get("total_profit_loss_rate"))
     cost = _to_float(summary.get("total_cost"))
+    realized_pl = _to_float(summary.get("realized_profit_loss") if summary.get("realized_profit_loss") is not None else realized.get("profit_loss"))
+    realized_source = str(realized.get("source") or "unavailable")
+    realized_note = "KIS 잔고 기준" if realized_source == "kis_balance" else "데이터 없음"
     pl_gain = pl >= 0
+    realized_gain = realized_pl >= 0
 
     if len(equity) >= 2:
         day_amt = equity[-1] - equity[-2]
@@ -1806,7 +1857,8 @@ def _hero_html(snapshot: dict[str, Any]) -> str:
       <div class='hero-substats'>
         <div class='ss'><span class='lbl'>Cost · 매입원가</span><span class='val'>₩{_krw_int(cost)}</span><span class='sub'>unit basis</span></div>
         <div class='ss'><span class='lbl'>Holdings · 보유</span><span class='val'>{len(positions)} 종목</span><span class='sub'>long only</span></div>
-        <div class='ss'><span class='lbl'>Realized · 실현</span><span class='val'>₩0</span><span class='sub'>paper account</span></div>
+        <div class='ss'><span class='lbl'>Cash · 현금</span><span class='val'>₩{_krw_int(cash_balance)}</span><span class='sub'>available</span></div>
+        <div class='ss'><span class='lbl'>Realized · 실현</span><span class='val {"gain" if realized_gain else "loss"}'>{"+" if realized_gain else ""}₩{_krw_int(realized_pl)}</span><span class='sub'>{html.escape(realized_note)}</span></div>
         <div class='ss'><span class='lbl'>Strategy · 전략</span><span class='val' style='font-size:14px;'>QUNT v3.2</span><span class='sub'>multi-factor + flow</span></div>
       </div>
     </div>
@@ -2157,7 +2209,8 @@ def render_dashboard(snapshot: dict[str, Any]) -> None:
 
     positions = list(snapshot.get("positions") or [])
     positions.sort(key=lambda p: _to_float(p.get("market_value")), reverse=True)
-    total_mv = _to_float((snapshot.get("summary") or {}).get("total_market_value"))
+    summary = snapshot.get("summary") or {}
+    total_mv = _to_float(summary.get("stock_market_value") or summary.get("total_market_value"))
     session_state = getattr(st, "session_state", {})
 
     # selection state
@@ -2168,8 +2221,8 @@ def render_dashboard(snapshot: dict[str, Any]) -> None:
     ticker_brief_by_ticker = dict(ticker_brief_result.get("by_ticker") or {})
 
     if hasattr(st, "tabs"):
-        portfolio_tab, needs_tab, tasks_tab, ticker_tab, research_tab = st.tabs(
-            ["Portfolio", "Supplement Needs", "해야 할 작업", "Ticker Briefs", "Research Reports"]
+        portfolio_tab, needs_tab, ticker_tab, research_tab = st.tabs(
+            ["Portfolio", "Supplement Needs", "Ticker Briefs", "Research Reports"]
         )
         with portfolio_tab:
             _render_portfolio_tab(
@@ -2183,12 +2236,10 @@ def render_dashboard(snapshot: dict[str, Any]) -> None:
             )
         with needs_tab:
             _render_research_supplement_needs_tab(st, positions, ticker_brief_result)
-        with tasks_tab:
-            _render_research_qa_action_tab(st)
         with ticker_tab:
             _render_ticker_research_brief_tab(st, positions, ticker_brief_result)
         with research_tab:
-            _render_research_report_tab(st, positions)
+            _render_research_report_tab(st, positions, generated_at=snapshot.get("generated_at"))
         return
 
     _render_portfolio_tab(
@@ -2201,9 +2252,8 @@ def render_dashboard(snapshot: dict[str, Any]) -> None:
         ticker_brief_by_ticker=ticker_brief_by_ticker,
     )
     _render_research_supplement_needs_tab(st, positions, ticker_brief_result)
-    _render_research_qa_action_tab(st)
     _render_ticker_research_brief_tab(st, positions, ticker_brief_result)
-    _render_research_report_tab(st, positions)
+    _render_research_report_tab(st, positions, generated_at=snapshot.get("generated_at"))
 
 
 def _render_portfolio_tab(
@@ -2288,7 +2338,12 @@ def _render_portfolio_tab(
     )
 
 
-def _render_research_report_tab(st, positions: list[dict[str, Any]]) -> None:
+def _render_research_report_tab(
+    st,
+    positions: list[dict[str, Any]],
+    *,
+    generated_at: object = None,
+) -> None:
     portfolio_tickers = {str(position.get("ticker")) for position in positions if position.get("ticker")}
     result = load_research_report_briefs()
     if result["status"] != "ok":
@@ -2308,6 +2363,10 @@ def _render_research_report_tab(st, positions: list[dict[str, Any]]) -> None:
         f"<span class='count'>{len(rows)} reports loaded</span></div>",
         unsafe_allow_html=True,
     )
+
+    freshness = dict(result.get("freshness") or {})
+    freshness["generated_at"] = generated_at or result.get("generated_at", "")
+    st.markdown(_research_freshness_html(freshness), unsafe_allow_html=True)
 
     controls = st.columns([1, 1, 1, 1.3], gap="small") if hasattr(st, "columns") else []
     if controls:
@@ -2497,7 +2556,8 @@ def _render_research_supplement_needs_tab(
         st.warning(f"Ticker brief artifact is invalid: {result.get('error', 'unknown error')}")
         return
     artifact = result.get("artifact") or {}
-    needs = build_research_supplement_needs(artifact, positions)
+    quality_queue = load_research_quality_queue()
+    needs = build_research_supplement_needs(artifact, positions, queue_result=quality_queue)
     st.markdown(
         "<div class='section-label'><span>Supplement Needs</span>"
         f"<span class='count'>{len(needs)} portfolio tickers need action</span></div>",
@@ -2593,6 +2653,31 @@ REPORT_PLACEHOLDER_TERMS = (
     "본문 근거 추출은 제한적입니다",
     "본문 근거 추출이 제한적입니다",
 )
+
+
+def _research_freshness_html(freshness: dict[str, Any]) -> str:
+    generated_at = html.escape(str(freshness.get("generated_at") or "-"))
+    latest_brief = html.escape(str(freshness.get("latest_brief_date") or "-"))
+    latest_signal = html.escape(str(freshness.get("latest_signal_date") or "-"))
+    missing_briefs = int(_to_float(freshness.get("missing_brief_count")))
+    status = "synced" if missing_briefs == 0 else "check"
+    return f"""
+    <div class="research-card op-next">
+      <div class="head">
+        <div>
+          <div class="meta">Research Freshness</div>
+          <div class="title">Brief and signal coverage</div>
+        </div>
+        <div class="pill">{status}</div>
+      </div>
+      <div class="research-grid">
+        <div class="research-cell"><b>Generated at</b>{generated_at}</div>
+        <div class="research-cell"><b>Latest brief</b>{latest_brief}</div>
+        <div class="research-cell"><b>Latest signal</b>{latest_signal}</div>
+        <div class="research-cell"><b>Missing briefs</b>{missing_briefs}</div>
+      </div>
+    </div>
+    """
 
 
 def _research_report_card_html(row: dict[str, Any]) -> str:
@@ -2856,6 +2941,20 @@ def _is_report_display_noise(text: str) -> bool:
 
 def _looks_like_cut_report_fragment(text: str) -> bool:
     stripped = text.strip()
+    lower = stripped.lower()
+    english_cut_starts = (
+        "and ",
+        "or ",
+        "but ",
+        "while ",
+        "with ",
+        "from ",
+        "for ",
+        "as ",
+        "of ",
+    )
+    if any(lower.startswith(start) for start in english_cut_starts):
+        return True
     cut_starts = ("인의 ", "로 ", "대비 ", "및 ")
     if stripped.startswith("비 부담"):
         return True

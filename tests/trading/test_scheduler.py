@@ -1,10 +1,16 @@
-from datetime import date, timedelta
+﻿from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.data.database import create_tables, get_engine, session_scope
-from src.data.repositories import upsert_daily_prices
+from src.data.repositories import upsert_daily_prices, upsert_market_index_prices
 from src.factors.models import FactorScore
 from src.trading import scheduler
+from src.trading.bond_yield_risk import BondYieldAdjustment
+from src.trading.macro_risk import MacroExposureAdjustment
+from src.trading.rebalancer import RebalanceOrder
+from src.trading.us_market_risk import UsMarketBuyAdjustment
 
 
 def test_pre_market_sync_job_records_success_for_today():
@@ -49,6 +55,20 @@ def test_pre_market_sync_job_records_failure_for_today():
     assert state.last_error == "network down"
 
 
+def test_intraday_macro_risk_dry_run_job_invokes_report_runner_without_orders():
+    runner = MagicMock(return_value=0)
+
+    scheduler._intraday_macro_risk_dry_run_job(
+        today=date(2026, 5, 6),
+        run_func=runner,
+    )
+
+    args = runner.call_args.args[0]
+    assert args.as_of_date == date(2026, 5, 6)
+    assert str(args.output_json).endswith("macro_risk_rebalance_latest.json")
+    assert str(args.output_md).endswith("macro_risk_rebalance_latest.md")
+
+
 def test_rebalance_job_skips_when_required_pre_market_sync_missing():
     engine = MagicMock()
     state = scheduler.PreMarketSyncState()
@@ -66,7 +86,7 @@ def test_rebalance_job_skips_when_required_pre_market_sync_missing():
 def test_rebalance_job_continues_after_today_pre_market_sync_success():
     engine = MagicMock()
     engine.check_daily_loss_limit.return_value = False
-    engine.check_stop_loss.return_value = []
+    engine.check_exit_rules.return_value = []
     engine._client.get_holdings.return_value = []
     engine._client.get_balance.return_value = {"output2": [{"dnca_tot_amt": "0"}]}
     state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
@@ -85,10 +105,11 @@ def test_rebalance_job_continues_after_today_pre_market_sync_success():
 def test_rebalance_job_passes_dry_run_preflight_report_to_executor():
     engine = MagicMock()
     engine.check_daily_loss_limit.return_value = False
-    engine.check_stop_loss.return_value = []
+    engine.check_exit_rules.return_value = []
     engine.get_holdings.return_value = []
     engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "100000"}]}
     engine.get_current_price.return_value = {"rt_cd": "0", "output": {"stck_prpr": "10000"}}
+    engine.get_exit_state_entry_dates.return_value = {}
     state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
     score = FactorScore(
         ticker="005930",
@@ -99,7 +120,8 @@ def test_rebalance_job_passes_dry_run_preflight_report_to_executor():
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=1.0,
         rank=1,
     )
@@ -121,6 +143,141 @@ def test_rebalance_job_passes_dry_run_preflight_report_to_executor():
         scheduler.REBALANCE.dry_run_preflight_report_path
     )
     assert execute.call_args.kwargs["expected_preflight_date"] == date(2026, 5, 6)
+    assert execute.call_args.kwargs["enforce_preflight_order_match"] is True
+
+
+def test_rebalance_job_includes_macro_reduction_sells_for_preflight_match():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = False
+    engine.check_exit_rules.return_value = []
+    engine.get_holdings.return_value = [
+        {"ticker": "OLD", "name": "Old", "qty": 9, "current_price": 10000}
+    ]
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "10000"}]}
+    engine.get_exit_state_entry_dates.return_value = {}
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
+    score = FactorScore(
+        ticker="OLD",
+        name="Old",
+        market="KOSPI",
+        as_of_date=date(2026, 5, 6),
+        value_score=1.0,
+        quality_score=1.0,
+        momentum_score=1.0,
+        yield_score=1.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
+        total_score=1.0,
+        rank=1,
+    )
+    macro_adjustment = MacroExposureAdjustment(
+        status="risk_off",
+        buy_budget_multiplier=0.6,
+        cash_target=0.4,
+        signals=["NASDAQ:-3.00%"],
+        missing_sources=[],
+        us_market=UsMarketBuyAdjustment("risk_off", 0.6, 0.4, ["NASDAQ:-3.00%"], {}),
+        bond_yield=BondYieldAdjustment("neutral", 1.0, 0.0, [], {}),
+        indicator_signals=[],
+    )
+    execute = MagicMock(return_value={"sold": [], "bought": [], "failed": []})
+
+    with (
+        patch.object(scheduler, "_get_previous_closes", MagicMock(return_value={})),
+        patch.object(scheduler, "execute_rebalance", execute),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine="db-engine",
+            sync_state=state,
+            today=date(2026, 5, 6),
+            score_func=MagicMock(return_value=[score]),
+            macro_adjustment_loader=MagicMock(return_value=macro_adjustment),
+        )
+
+    sells = execute.call_args.args[1]
+    buys = execute.call_args.args[2]
+    assert sells == [
+        RebalanceOrder("OLD", "SELL", 3, "macro_risk_reduce to 40% cash target")
+    ]
+    assert buys == []
+
+
+def test_rebalance_job_includes_inverse_etf_hedge_orders_for_preflight_match(monkeypatch):
+    from config import InverseEtfHedgeConfig
+
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = False
+    engine.check_exit_rules.return_value = []
+    engine.get_holdings.return_value = [
+        {"ticker": "OLD", "name": "Old", "qty": 900, "avg_price": 10000, "current_price": 10000}
+    ]
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "1000000"}]}
+    engine.get_current_price.side_effect = [
+        {"rt_cd": "0", "output": {"stck_prpr": "10000"}},
+        {"rt_cd": "0", "output": {"stck_prpr": "5000"}},
+    ]
+    engine.get_exit_state_entry_dates.return_value = {}
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
+    score = FactorScore(
+        ticker="OLD",
+        name="Old",
+        market="KOSPI",
+        as_of_date=date(2026, 5, 6),
+        value_score=1.0,
+        quality_score=1.0,
+        momentum_score=1.0,
+        yield_score=1.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
+        total_score=1.0,
+        rank=1,
+    )
+    macro_adjustment = MacroExposureAdjustment(
+        status="risk_off",
+        buy_budget_multiplier=0.6,
+        cash_target=0.4,
+        signals=["NASDAQ:-6.00%"],
+        missing_sources=[],
+        us_market=UsMarketBuyAdjustment("risk_off", 0.6, 0.4, ["NASDAQ:-6.00%"], {"NASDAQ": -0.06}),
+        bond_yield=BondYieldAdjustment("neutral", 1.0, 0.0, [], {}),
+        indicator_signals=[],
+    )
+    execute = MagicMock(return_value={"sold": [], "bought": [], "failed": []})
+    monkeypatch.setattr(
+        scheduler,
+        "INVERSE_ETF",
+        InverseEtfHedgeConfig(
+            enabled=True,
+            allowed_tickers=("INV1", "INV2"),
+            leveraged_tickers=("INV2",),
+        ),
+    )
+
+    with (
+        patch.object(scheduler, "_get_previous_closes", MagicMock(return_value={})),
+        patch.object(scheduler, "_load_domestic_index_closes", MagicMock(return_value={})),
+        patch.object(scheduler, "execute_rebalance", execute),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine="db-engine",
+            sync_state=state,
+            today=date(2026, 5, 6),
+            score_func=MagicMock(return_value=[score]),
+            macro_adjustment_loader=MagicMock(return_value=macro_adjustment),
+        )
+
+    buys = execute.call_args.args[2]
+    assert any(
+        order == RebalanceOrder(
+            "INV2",
+            "BUY",
+            60,
+            "inverse_etf_hedge_market_drop+inverse_etf_hedge_macro_risk_off target 3.00%",
+        )
+        for order in buys
+    )
 
 
 def test_rebalance_job_passes_previous_closes_to_rebalancer():
@@ -144,10 +301,11 @@ def test_rebalance_job_passes_previous_closes_to_rebalancer():
 
     engine = MagicMock()
     engine.check_daily_loss_limit.return_value = False
-    engine.check_stop_loss.return_value = []
+    engine.check_exit_rules.return_value = []
     engine.get_holdings.return_value = []
     engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "100000"}]}
     engine.get_current_price.return_value = {"rt_cd": "0", "output": {"stck_prpr": "121000"}}
+    engine.get_exit_state_entry_dates.return_value = {}
     state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
     score = FactorScore(
         ticker="005930",
@@ -158,7 +316,8 @@ def test_rebalance_job_passes_previous_closes_to_rebalancer():
         quality_score=1.0,
         momentum_score=1.0,
         yield_score=1.0,
-        telegram_score=0.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
         total_score=1.0,
         rank=1,
     )
@@ -181,6 +340,335 @@ def test_rebalance_job_passes_previous_closes_to_rebalancer():
         )
 
     assert compute.call_args.kwargs["previous_closes"] == {"005930": 100000}
+
+
+def test_rebalance_job_applies_buffer_and_target_weights_without_holding_age_gate():
+    db_engine = get_engine("sqlite:///:memory:")
+    create_tables(db_engine)
+    with session_scope(db_engine) as session:
+        upsert_daily_prices(
+            session,
+            [
+                {"ticker": "HELD3", "date": date(2026, 5, 4), "close": 1000},
+                {"ticker": "HELD3", "date": date(2026, 5, 5), "close": 1000},
+                {"ticker": "HELD3", "date": date(2026, 5, 6), "close": 1000},
+            ],
+        )
+
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = False
+    engine.check_exit_rules.return_value = []
+    engine.get_holdings.return_value = [
+        {"ticker": "HELD2", "qty": 1, "avg_price": 1000, "current_price": 1000},
+        {"ticker": "HELD3", "qty": 1, "avg_price": 1000, "current_price": 1000},
+        {"ticker": "NEWISH", "qty": 1, "avg_price": 1000, "current_price": 1000},
+    ]
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "100000"}]}
+    engine.get_current_price.return_value = {"rt_cd": "0", "output": {"stck_prpr": "10000"}}
+    engine.get_exit_state_entry_dates.return_value = {
+        "HELD3": date(2026, 5, 4),
+        "NEWISH": date(2026, 5, 5),
+    }
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
+    scores = [
+        FactorScore(
+            ticker=ticker,
+            name=ticker,
+            market="KOSPI",
+            as_of_date=date(2026, 5, 6),
+            value_score=1.0,
+            quality_score=1.0,
+            momentum_score=1.0,
+            yield_score=1.0,
+            technical_score=0.0,
+        auxiliary_score=0.0,
+            total_score=score,
+            rank=rank,
+        )
+        for rank, (ticker, score) in enumerate(
+            [("TARGET", 10.0), ("HELD2", 5.0), ("HELD3", 1.0), ("NEWISH", 0.5)],
+            start=1,
+        )
+    ]
+    compute = MagicMock(return_value=([], []))
+
+    with (
+        patch.object(
+            scheduler,
+            "PORTFOLIO",
+            scheduler.PORTFOLIO.__class__(
+                n_holdings=1,
+                weighting="score_weighted",
+                min_position_weight=0.03,
+                max_position_weight=0.15,
+            ),
+        ),
+        patch.object(
+            scheduler,
+            "REBALANCE",
+            scheduler.REBALANCE.__class__(sell_rank_buffer=2, min_holding_trading_days=2),
+        ),
+        patch.object(scheduler, "compute_rebalance_orders", compute),
+        patch.object(
+            scheduler,
+            "execute_rebalance",
+            MagicMock(return_value={"sold": [], "bought": [], "failed": []}),
+        ),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine=db_engine,
+            sync_state=state,
+            today=date(2026, 5, 6),
+            score_func=MagicMock(return_value=scores),
+        )
+
+    engine.check_exit_rules.assert_called_once()
+    engine.check_stop_loss.assert_not_called()
+    assert compute.call_args.kwargs["sell_eligible_tickers"] == ["HELD3", "NEWISH"]
+    assert compute.call_args.kwargs["target_weights"] == {"TARGET": 0.15}
+
+
+def test_rebalance_job_applies_us_market_buy_budget_multiplier():
+    db_engine = get_engine("sqlite:///:memory:")
+    create_tables(db_engine)
+    with session_scope(db_engine) as session:
+        upsert_market_index_prices(
+            session,
+            [
+                {"symbol": "NASDAQ", "date": date(2026, 5, 5), "close": 100.0},
+                {"symbol": "NASDAQ", "date": date(2026, 5, 6), "close": 102.0},
+                {"symbol": "SP500", "date": date(2026, 5, 5), "close": 100.0},
+                {"symbol": "SP500", "date": date(2026, 5, 6), "close": 101.6},
+                {"symbol": "DOW", "date": date(2026, 5, 5), "close": 100.0},
+                {"symbol": "DOW", "date": date(2026, 5, 6), "close": 101.4},
+            ],
+        )
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = False
+    engine.check_exit_rules.return_value = []
+    engine.get_holdings.return_value = []
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "100000"}]}
+    engine.get_current_price.return_value = {"rt_cd": "0", "output": {"stck_prpr": "10000"}}
+    engine.get_exit_state_entry_dates.return_value = {}
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 7))
+    score = FactorScore(
+        ticker="TARGET",
+        name="TARGET",
+        market="KOSPI",
+        as_of_date=date(2026, 5, 7),
+        value_score=1.0,
+        quality_score=1.0,
+        momentum_score=1.0,
+        yield_score=1.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
+        total_score=10.0,
+        rank=1,
+    )
+    compute = MagicMock(return_value=([], []))
+
+    with (
+        patch.object(
+            scheduler,
+            "PORTFOLIO",
+            scheduler.PORTFOLIO.__class__(
+                n_holdings=1,
+                weighting="score_weighted",
+                min_position_weight=0.03,
+                max_position_weight=0.15,
+            ),
+        ),
+        patch.object(scheduler, "compute_rebalance_orders", compute),
+        patch.object(
+            scheduler,
+            "execute_rebalance",
+            MagicMock(return_value={"sold": [], "bought": [], "failed": []}),
+        ),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine=db_engine,
+            sync_state=state,
+            today=date(2026, 5, 7),
+            score_func=MagicMock(return_value=[score]),
+        )
+
+    assert compute.call_args.kwargs["buy_budget_multiplier"] == 1.2
+    assert compute.call_args.kwargs["target_weights"] == {"TARGET": 0.18}
+
+
+def test_rebalance_job_combines_us_market_and_bond_yield_multipliers():
+    db_engine = get_engine("sqlite:///:memory:")
+    create_tables(db_engine)
+    with session_scope(db_engine) as session:
+        upsert_market_index_prices(
+            session,
+            [
+                {"symbol": "NASDAQ", "date": date(2026, 5, 5), "close": 100.0},
+                {"symbol": "NASDAQ", "date": date(2026, 5, 6), "close": 102.0},
+                {"symbol": "SP500", "date": date(2026, 5, 5), "close": 100.0},
+                {"symbol": "SP500", "date": date(2026, 5, 6), "close": 101.6},
+                {"symbol": "DOW", "date": date(2026, 5, 5), "close": 100.0},
+                {"symbol": "DOW", "date": date(2026, 5, 6), "close": 101.4},
+                {"symbol": "KR10Y", "date": date(2026, 5, 5), "close": 3.40},
+                {"symbol": "KR10Y", "date": date(2026, 5, 6), "close": 3.57},
+                {"symbol": "US10Y", "date": date(2026, 5, 5), "close": 4.30},
+                {"symbol": "US10Y", "date": date(2026, 5, 6), "close": 4.47},
+            ],
+        )
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = False
+    engine.check_exit_rules.return_value = []
+    engine.get_holdings.return_value = []
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "100000"}]}
+    engine.get_current_price.return_value = {"rt_cd": "0", "output": {"stck_prpr": "10000"}}
+    engine.get_exit_state_entry_dates.return_value = {}
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 7))
+    score = FactorScore(
+        ticker="TARGET",
+        name="TARGET",
+        market="KOSPI",
+        as_of_date=date(2026, 5, 7),
+        value_score=1.0,
+        quality_score=1.0,
+        momentum_score=1.0,
+        yield_score=1.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
+        total_score=10.0,
+        rank=1,
+    )
+    compute = MagicMock(return_value=([], []))
+
+    with (
+        patch.object(
+            scheduler,
+            "PORTFOLIO",
+            scheduler.PORTFOLIO.__class__(
+                n_holdings=1,
+                weighting="score_weighted",
+                min_position_weight=0.03,
+                max_position_weight=0.15,
+            ),
+        ),
+        patch.object(scheduler, "compute_rebalance_orders", compute),
+        patch.object(
+            scheduler,
+            "execute_rebalance",
+            MagicMock(return_value={"sold": [], "bought": [], "failed": []}),
+        ),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine=db_engine,
+            sync_state=state,
+            today=date(2026, 5, 7),
+            score_func=MagicMock(return_value=[score]),
+        )
+
+    assert compute.call_args.kwargs["buy_budget_multiplier"] == 0.84
+    assert compute.call_args.kwargs["target_weights"] == {"TARGET": 0.126}
+
+
+def test_rebalance_job_runs_sell_only_when_daily_loss_limit_triggered():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = True
+    engine.check_exit_rules.return_value = []
+    engine.get_holdings.return_value = []
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "100000"}]}
+    engine.get_current_price.return_value = {"rt_cd": "0", "output": {"stck_prpr": "10000"}}
+    engine.get_exit_state_entry_dates.return_value = {}
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
+    score = FactorScore(
+        ticker="005930",
+        name="Samsung",
+        market="KOSPI",
+        as_of_date=date(2026, 5, 6),
+        value_score=1.0,
+        quality_score=1.0,
+        momentum_score=1.0,
+        yield_score=1.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
+        total_score=1.0,
+        rank=1,
+    )
+    sells = [RebalanceOrder("OLD", "SELL", 1, "risk reduction")]
+    buys = [RebalanceOrder("005930", "BUY", 1, "target entry")]
+    compute = MagicMock(return_value=(sells, buys))
+    execute = MagicMock(return_value={"sold": ["OLD"], "bought": [], "failed": []})
+
+    with (
+        patch.object(scheduler, "_get_previous_closes", MagicMock(return_value={})),
+        patch.object(scheduler, "compute_rebalance_orders", compute),
+        patch.object(scheduler, "execute_rebalance", execute),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine="db-engine",
+            sync_state=state,
+            today=date(2026, 5, 6),
+            score_func=MagicMock(return_value=[score]),
+        )
+
+    engine.check_exit_rules.assert_called_once()
+    execute.assert_called_once()
+    assert execute.call_args.args[1] == sells
+    assert execute.call_args.args[2] == []
+    assert execute.call_args.kwargs["allow_buys"] is False
+
+
+def test_rebalance_job_still_checks_exits_when_daily_loss_check_fails():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.side_effect = TimeoutError("balance timeout")
+    engine.check_exit_rules.return_value = ["005930"]
+    engine.get_holdings.return_value = []
+    engine.get_balance.return_value = {"output2": [{"dnca_tot_amt": "100000"}]}
+    engine.get_exit_state_entry_dates.return_value = {}
+    state = scheduler.PreMarketSyncState(last_success_date=date(2026, 5, 6))
+    score = FactorScore(
+        ticker="005930",
+        name="Samsung",
+        market="KOSPI",
+        as_of_date=date(2026, 5, 6),
+        value_score=1.0,
+        quality_score=1.0,
+        momentum_score=1.0,
+        yield_score=1.0,
+        technical_score=0.0,
+        auxiliary_score=0.0,
+        total_score=1.0,
+        rank=1,
+    )
+    sells = [RebalanceOrder("OLD", "SELL", 1, "risk reduction")]
+    buys = [RebalanceOrder("005930", "BUY", 1, "target entry")]
+    compute = MagicMock(return_value=(sells, buys))
+    execute = MagicMock(return_value={"sold": ["OLD"], "bought": [], "failed": []})
+
+    with (
+        patch.object(scheduler, "_get_previous_closes", MagicMock(return_value={})),
+        patch.object(scheduler, "compute_rebalance_orders", compute),
+        patch.object(scheduler, "execute_rebalance", execute),
+    ):
+        scheduler._rebalance_job(
+            engine=engine,
+            db_engine="db-engine",
+            sync_state=state,
+            today=date(2026, 5, 6),
+            score_func=MagicMock(return_value=[score]),
+        )
+
+    engine.check_daily_loss_limit.assert_called_once()
+    engine.check_exit_rules.assert_called_once()
+    engine.get_current_price.assert_not_called()
+    assert compute.call_args.kwargs["target_tickers"] == []
+    assert compute.call_args.kwargs["prices"] == {}
+    assert compute.call_args.kwargs["target_weights"] == {}
+    execute.assert_called_once()
+    assert execute.call_args.args[1] == sells
+    assert execute.call_args.args[2] == []
+    assert execute.call_args.kwargs["allow_buys"] is False
 
 
 def test_run_scheduler_registers_pre_market_sync_before_rebalance():
@@ -248,6 +736,90 @@ def test_research_report_job_fetches_configured_hankyung_source():
     )
 
 
+def test_stop_loss_job_uses_generalized_exit_monitor():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = False
+    engine.check_exit_rules.return_value = ["005930"]
+
+    scheduler._stop_loss_job(engine)
+
+    engine.check_daily_loss_limit.assert_called_once()
+    engine.check_exit_rules.assert_called_once()
+    engine.check_stop_loss.assert_not_called()
+    engine.check_trailing_stop.assert_not_called()
+
+
+def test_stop_loss_job_runs_exit_monitor_when_daily_loss_limit_triggered():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.return_value = True
+    engine.check_exit_rules.return_value = ["005930"]
+
+    scheduler._stop_loss_job(engine)
+
+    engine.check_daily_loss_limit.assert_called_once()
+    engine.check_exit_rules.assert_called_once()
+
+
+def test_stop_loss_job_runs_exit_monitor_when_daily_loss_check_fails():
+    engine = MagicMock()
+    engine.check_daily_loss_limit.side_effect = TimeoutError("balance timeout")
+    engine.check_exit_rules.return_value = ["005930"]
+
+    scheduler._stop_loss_job(engine)
+
+    engine.check_daily_loss_limit.assert_called_once()
+    engine.check_exit_rules.assert_called_once()
+
+
+def test_load_daily_price_atr_uses_true_range(tmp_path):
+    db_engine = get_engine(f"sqlite:///{tmp_path / 'atr.db'}")
+    scheduler.create_tables(db_engine)
+    rows = []
+    for day, high, low, close in [
+        (1, 105, 95, 100),
+        (2, 112, 101, 110),
+        (3, 118, 106, 108),
+        (4, 115, 100, 102),
+    ]:
+        rows.append({
+            "ticker": "005930",
+            "date": date(2026, 5, day),
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": 1,
+        })
+    with session_scope(db_engine) as session:
+        upsert_daily_prices(session, rows)
+
+    atr = scheduler._load_daily_price_atr(
+        db_engine,
+        "005930",
+        as_of_date=date(2026, 5, 4),
+        window=3,
+    )
+
+    assert atr == pytest.approx((12 + 12 + 15) / 3)
+
+
+def test_run_scheduler_injects_atr_lookup_into_trading_engine():
+    fake_scheduler = MagicMock()
+    fake_scheduler.start.side_effect = KeyboardInterrupt
+    engine_ctor = MagicMock(return_value=MagicMock())
+
+    with (
+        patch.object(scheduler, "BlockingScheduler", return_value=fake_scheduler),
+        patch.object(scheduler, "get_engine", return_value="db-engine"),
+        patch.object(scheduler, "create_tables"),
+        patch.object(scheduler, "KisClient"),
+        patch.object(scheduler, "TradingEngine", engine_ctor),
+    ):
+        scheduler.run_scheduler()
+
+    assert engine_ctor.call_args.kwargs["atr_lookup"] is not None
+
+
 def test_run_scheduler_uses_research_report_poll_window():
     fake_scheduler = MagicMock()
     fake_scheduler.start.side_effect = KeyboardInterrupt
@@ -263,7 +835,7 @@ def test_run_scheduler_uses_research_report_poll_window():
             scheduler.RESEARCH_REPORT.__class__(
                 enabled=True,
                 source="hankyung_consensus",
-                broker="한경 컨센서스",
+                broker="?쒓꼍 而⑥꽱?쒖뒪",
                 url="https://markets.hankyung.com/consensus",
                 poll_start_hour=7,
                 poll_end_hour=8,
@@ -277,3 +849,4 @@ def test_run_scheduler_uses_research_report_poll_window():
         if call.kwargs["id"] == "research_report_poll"
     )
     assert research_job.kwargs["hour"] == "7-8"
+

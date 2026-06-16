@@ -6,7 +6,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from config import PortfolioConfig
-from src.trading.rebalancer import RebalanceOrder, compute_rebalance_orders, execute_rebalance
+from src.trading.rebalancer import (
+    RebalanceOrder,
+    compute_macro_reduction_orders,
+    compute_rebalance_orders,
+    execute_rebalance,
+)
 
 
 def _portfolio(n: int = 3, enforce_price_filter: bool = True) -> PortfolioConfig:
@@ -149,8 +154,124 @@ def test_buy_budget_includes_expected_sell_proceeds():
         portfolio=_portfolio(n=1),
     )
 
-    assert sells == [RebalanceOrder("OLD", "SELL", 5, "목표 포트폴리오에서 제외 (보유 5주)")]
-    assert buys == [RebalanceOrder("NEW", "BUY", 5, "목표 포트폴리오 편입 (배분 50,000원 / 10,000원 = 5주)")]
+    assert sells == [RebalanceOrder("OLD", "SELL", 5, "rebalance sell buffer exit (holding 5 shares)")]
+    assert buys == [RebalanceOrder("NEW", "BUY", 5, "target portfolio entry (budget 50,000 / 10,000 = 5 shares)")]
+
+
+def test_rank_buffer_keeps_held_ticker_outside_buy_list_but_inside_sell_buffer():
+    holdings = [
+        {"ticker": "HELD", "name": "Held", "qty": 10, "avg_price": 1000, "current_price": 1000},
+    ]
+
+    sells, buys = compute_rebalance_orders(
+        holdings=holdings,
+        target_tickers=["NEW"],
+        prices={"NEW": 1000},
+        cash=10_000,
+        portfolio=_portfolio(n=1),
+        sell_eligible_tickers=[],
+    )
+
+    assert sells == []
+    assert [order.ticker for order in buys] == ["NEW"]
+
+
+def test_rank_buffer_sells_held_ticker_outside_sell_buffer():
+    holdings = [
+        {"ticker": "OLD", "name": "Old", "qty": 10, "avg_price": 1000, "current_price": 1000},
+    ]
+
+    sells, _ = compute_rebalance_orders(
+        holdings=holdings,
+        target_tickers=["NEW"],
+        prices={"NEW": 1000},
+        cash=10_000,
+        portfolio=_portfolio(n=1),
+        sell_eligible_tickers=["OLD"],
+    )
+
+    assert [order.ticker for order in sells] == ["OLD"]
+
+
+def test_score_weighted_buy_sizing_uses_target_weights():
+    holdings = []
+    target = ["AAA", "BBB"]
+    prices = {"AAA": 1000, "BBB": 1000}
+
+    _, buys = compute_rebalance_orders(
+        holdings=holdings,
+        target_tickers=target,
+        prices=prices,
+        cash=100_000,
+        portfolio=_portfolio(n=2),
+        target_weights={"AAA": 0.70, "BBB": 0.30},
+    )
+
+    assert [(order.ticker, order.qty) for order in buys] == [("AAA", 70), ("BBB", 30)]
+
+
+def test_buy_budget_multiplier_scales_orders_without_exceeding_budget():
+    _, buys = compute_rebalance_orders(
+        holdings=[],
+        target_tickers=["AAA", "BBB"],
+        prices={"AAA": 100, "BBB": 100},
+        cash=1_000,
+        target_weights={"AAA": 0.60, "BBB": 0.60},
+    )
+
+    assert [(order.ticker, order.qty) for order in buys] == [("AAA", 6), ("BBB", 4)]
+
+
+def test_macro_reduction_sells_proportionally_to_reach_cash_target():
+    holdings = [
+        {"ticker": "AAA", "name": "AAA", "qty": 6, "current_price": 10},
+        {"ticker": "BBB", "name": "BBB", "qty": 3, "current_price": 10},
+    ]
+
+    sells, skipped = compute_macro_reduction_orders(
+        holdings=holdings,
+        prices={"AAA": 10, "BBB": 10},
+        cash=10,
+        target_cash_ratio=0.40,
+        existing_sells=[],
+    )
+
+    assert skipped == []
+    assert sells == [
+        RebalanceOrder("AAA", "SELL", 2, "macro_risk_reduce to 40% cash target"),
+        RebalanceOrder("BBB", "SELL", 1, "macro_risk_reduce to 40% cash target"),
+    ]
+
+
+def test_macro_reduction_skips_existing_sell_and_missing_price():
+    holdings = [
+        {"ticker": "AAA", "name": "AAA", "qty": 10, "current_price": 10},
+        {"ticker": "BBB", "name": "BBB", "qty": 10},
+    ]
+
+    sells, skipped = compute_macro_reduction_orders(
+        holdings=holdings,
+        prices={"AAA": 10},
+        cash=0,
+        target_cash_ratio=0.50,
+        existing_sells=[RebalanceOrder("AAA", "SELL", 10, "rebalance")],
+    )
+
+    assert sells == []
+    assert skipped == [{"ticker": "BBB", "reason": "missing_price"}]
+
+
+def test_macro_reduction_returns_no_orders_when_cash_target_already_met():
+    sells, skipped = compute_macro_reduction_orders(
+        holdings=[{"ticker": "AAA", "name": "AAA", "qty": 10, "current_price": 10}],
+        prices={"AAA": 10},
+        cash=100,
+        target_cash_ratio=0.50,
+        existing_sells=[],
+    )
+
+    assert sells == []
+    assert skipped == []
 
 
 # ------------------------------------------------------------------
@@ -182,6 +303,34 @@ def test_execute_sells_before_buys():
     assert sell_call_idx < buy_call_idx
 
 
+def test_execute_rebalance_returns_order_numbers_for_successes():
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0", "output": {"ODNO": "S1"}}
+    engine.buy.return_value = {"rt_cd": "0", "output": {"ODNO": "B1"}}
+
+    result = execute_rebalance(
+        engine,
+        [RebalanceOrder("005930", "SELL", 5, "exclude")],
+        [RebalanceOrder("000660", "BUY", 2, "include")],
+    )
+
+    assert result["order_numbers"] == {"SELL": ["S1"], "BUY": ["B1"]}
+    engine.sell.assert_called_once_with(
+        "005930",
+        qty=5,
+        price=0,
+        reason="exclude",
+        order_source="rebalance",
+    )
+    engine.buy.assert_called_once_with(
+        "000660",
+        qty=2,
+        price=0,
+        reason="include",
+        order_source="rebalance",
+    )
+
+
 def test_execute_records_failed_on_error():
     """주문 실패 시 failed 목록에 종목코드가 추가된다."""
     engine = MagicMock()
@@ -192,6 +341,67 @@ def test_execute_records_failed_on_error():
 
     assert result["failed"] == ["005930"]
     assert result["sold"] == []
+
+
+def test_execute_records_failed_and_continues_when_sell_raises():
+    engine = MagicMock()
+    engine.sell.side_effect = [
+        {"rt_cd": "0"},
+        Exception("500 Server Error"),
+        {"rt_cd": "0"},
+    ]
+    sells = [
+        RebalanceOrder("005930", "SELL", 1, "first"),
+        RebalanceOrder("000660", "SELL", 1, "second"),
+        RebalanceOrder("000270", "SELL", 1, "third"),
+    ]
+
+    result = execute_rebalance(engine, sells, [])
+
+    assert result["sold"] == ["005930", "000270"]
+    assert result["failed"] == ["000660"]
+    assert engine.sell.call_count == 3
+
+
+def test_execute_skips_buys_when_any_sell_fails():
+    engine = MagicMock()
+    engine.sell.side_effect = [
+        {"rt_cd": "0"},
+        Exception("500 Server Error"),
+    ]
+    engine.buy.return_value = {"rt_cd": "0"}
+    sells = [
+        RebalanceOrder("005930", "SELL", 1, "first"),
+        RebalanceOrder("000660", "SELL", 1, "second"),
+    ]
+    buys = [RebalanceOrder("000270", "BUY", 1, "entry")]
+
+    result = execute_rebalance(engine, sells, buys)
+
+    assert result["sold"] == ["005930"]
+    assert result["failed"] == ["000660"]
+    assert result["bought"] == []
+    engine.buy.assert_not_called()
+
+
+def test_execute_records_failed_and_continues_when_buy_raises():
+    engine = MagicMock()
+    engine.buy.side_effect = [
+        {"rt_cd": "0"},
+        Exception("500 Server Error"),
+        {"rt_cd": "0"},
+    ]
+    buys = [
+        RebalanceOrder("005930", "BUY", 1, "first"),
+        RebalanceOrder("000660", "BUY", 1, "second"),
+        RebalanceOrder("000270", "BUY", 1, "third"),
+    ]
+
+    result = execute_rebalance(engine, [], buys)
+
+    assert result["bought"] == ["005930", "000270"]
+    assert result["failed"] == ["000660"]
+    assert engine.buy.call_count == 3
 
 
 def test_execute_rebalance_blocks_orders_when_dry_run_used_fallback_price(tmp_path):
@@ -247,14 +457,82 @@ def test_execute_rebalance_blocks_orders_when_dry_run_report_is_stale(tmp_path):
     engine.buy.assert_not_called()
 
 
-def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp_path):
+def test_execute_rebalance_blocks_when_orders_do_not_match_preflight_report(tmp_path):
     engine = MagicMock()
     report_path = tmp_path / "dry_run.json"
     report_path.write_text(
         json.dumps({
             "dry_run": True,
             "as_of_date": "2026-05-08",
-            "buy_count": 11,
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "orders": [
+                {"side": "SELL", "ticker": "005930", "qty": 5, "reason": "exclude"},
+                {"side": "BUY", "ticker": "000660", "qty": 2, "reason": "include"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    sells = [RebalanceOrder("005930", "SELL", 5, "exclude")]
+    buys = [RebalanceOrder("000270", "BUY", 2, "include")]
+
+    with pytest.raises(RuntimeError, match="order mismatch"):
+        execute_rebalance(
+            engine,
+            sells,
+            buys,
+            preflight_report_path=report_path,
+            enforce_preflight_order_match=True,
+        )
+
+    engine.sell.assert_not_called()
+    engine.buy.assert_not_called()
+
+
+def test_execute_rebalance_sell_only_order_match_ignores_report_buys(tmp_path):
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0"}
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "price_fallback_count": 1,
+            "price_lookup_failed_count": 1,
+            "price_fallbacks": [{"ticker": "000660", "price": 10000}],
+            "price_lookup_failures": ["000270"],
+            "orders": [
+                {"side": "SELL", "ticker": "005930", "qty": 5, "reason": "exclude"},
+                {"side": "BUY", "ticker": "000660", "qty": 2, "reason": "include"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    sells = [RebalanceOrder("005930", "SELL", 5, "exclude")]
+    buys = []
+
+    result = execute_rebalance(
+        engine,
+        sells,
+        buys,
+        preflight_report_path=report_path,
+        allow_buys=False,
+        enforce_preflight_order_match=True,
+    )
+
+    assert result["sold"] == ["005930"]
+    engine.buy.assert_not_called()
+
+
+def test_execute_rebalance_allows_twenty_daily_buys(tmp_path):
+    engine = MagicMock()
+    engine.buy.return_value = {"rt_cd": "0"}
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 20,
             "sell_count": 0,
             "price_fallback_count": 0,
             "price_lookup_failed_count": 0,
@@ -265,7 +543,107 @@ def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp
     )
     buys = [
         RebalanceOrder(f"{idx:06d}", "BUY", 1, "include")
-        for idx in range(11)
+        for idx in range(20)
+    ]
+
+    result = execute_rebalance(
+        engine,
+        [],
+        buys,
+        preflight_report_path=report_path,
+        expected_preflight_date=date(2026, 5, 8),
+    )
+
+    assert len(result["bought"]) == 20
+    assert engine.buy.call_count == 20
+
+
+def test_execute_rebalance_allows_thirty_daily_sells(tmp_path):
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0"}
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 0,
+            "sell_count": 30,
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+        }),
+        encoding="utf-8",
+    )
+    sells = [
+        RebalanceOrder(f"{idx:06d}", "SELL", 1, "rebalance exit")
+        for idx in range(30)
+    ]
+
+    result = execute_rebalance(
+        engine,
+        sells,
+        [],
+        preflight_report_path=report_path,
+        expected_preflight_date=date(2026, 5, 8),
+    )
+
+    assert len(result["sold"]) == 30
+    assert engine.sell.call_count == 30
+
+
+def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_sell_limit(tmp_path):
+    engine = MagicMock()
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 0,
+            "sell_count": 31,
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+        }),
+        encoding="utf-8",
+    )
+    sells = [
+        RebalanceOrder(f"{idx:06d}", "SELL", 1, "rebalance exit")
+        for idx in range(31)
+    ]
+
+    with pytest.raises(RuntimeError, match="daily sell limit"):
+        execute_rebalance(
+            engine,
+            sells,
+            [],
+            preflight_report_path=report_path,
+            expected_preflight_date=date(2026, 5, 8),
+        )
+
+    engine.sell.assert_not_called()
+
+
+def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp_path):
+    engine = MagicMock()
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 31,
+            "sell_count": 0,
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+        }),
+        encoding="utf-8",
+    )
+    buys = [
+        RebalanceOrder(f"{idx:06d}", "BUY", 1, "include")
+        for idx in range(31)
     ]
 
     with pytest.raises(RuntimeError, match="daily buy limit"):
@@ -277,4 +655,70 @@ def test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit(tmp
             expected_preflight_date=date(2026, 5, 8),
         )
 
+    engine.buy.assert_not_called()
+
+
+def test_execute_rebalance_sell_only_ignores_preflight_buy_count(tmp_path):
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0"}
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 11,
+            "sell_count": 1,
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+        }),
+        encoding="utf-8",
+    )
+
+    result = execute_rebalance(
+        engine,
+        [RebalanceOrder("005930", "SELL", 1, "risk reduction")],
+        [RebalanceOrder("000660", "BUY", 1, "include")],
+        preflight_report_path=report_path,
+        expected_preflight_date=date(2026, 5, 8),
+        allow_buys=False,
+    )
+
+    assert result["sold"] == ["005930"]
+    assert result["bought"] == []
+    engine.sell.assert_called_once()
+    engine.buy.assert_not_called()
+
+
+def test_execute_rebalance_sell_only_ignores_buy_price_preflight_failures(tmp_path):
+    engine = MagicMock()
+    engine.sell.return_value = {"rt_cd": "0"}
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "buy_count": 1,
+            "sell_count": 1,
+            "price_fallback_count": 1,
+            "price_lookup_failed_count": 1,
+            "price_fallbacks": [{"ticker": "000660", "price": 10000, "source": "latest-db"}],
+            "price_lookup_failures": ["000270"],
+        }),
+        encoding="utf-8",
+    )
+
+    result = execute_rebalance(
+        engine,
+        [RebalanceOrder("005930", "SELL", 1, "risk reduction")],
+        [RebalanceOrder("000660", "BUY", 1, "include")],
+        preflight_report_path=report_path,
+        expected_preflight_date=date(2026, 5, 8),
+        allow_buys=False,
+    )
+
+    assert result["sold"] == ["005930"]
+    assert result["bought"] == []
+    engine.sell.assert_called_once()
     engine.buy.assert_not_called()

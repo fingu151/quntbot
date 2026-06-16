@@ -108,6 +108,101 @@ def test_run_executes_orders_from_clean_confirmed_dry_run(tmp_path):
     assert execute_func.call_args.kwargs["expected_preflight_date"] == date(2026, 5, 8)
 
 
+def test_run_records_trade_journal_after_confirmed_execution(tmp_path):
+    import scripts.execute_rebalance_from_dry_run as execute_script
+
+    report_path = tmp_path / "dry_run.json"
+    execution_report_path = tmp_path / "execution.json"
+    _write_report(report_path)
+    engine = MagicMock()
+    execute_func = MagicMock(
+        return_value={
+            "sold": ["OLD"],
+            "bought": ["NEW"],
+            "failed": [],
+            "order_numbers": {"SELL": ["S1"], "BUY": ["B1"]},
+        }
+    )
+    journal_record_func = MagicMock(return_value={"recorded_count": 2, "unmatched_count": 0})
+    args = execute_script.parse_args([
+        "--dry-run-json",
+        str(report_path),
+        "--expected-date",
+        "2026-05-08",
+        "--confirm",
+        "EXECUTE_PAPER_REBALANCE",
+        "--execution-report-json",
+        str(execution_report_path),
+    ])
+
+    result = execute_script.run(
+        args,
+        engine_factory=MagicMock(return_value=engine),
+        execute_func=execute_func,
+        journal_record_func=journal_record_func,
+        now=datetime(2026, 5, 4, 10, 0, tzinfo=KST),
+    )
+
+    assert result == 0
+    journal_args = journal_record_func.call_args.kwargs
+    assert journal_args["engine"] == engine
+    assert journal_args["trade_date"] == date(2026, 5, 8)
+    assert journal_args["dry_run_json"] == report_path
+    assert journal_args["execution_report_json"] == execution_report_path
+    assert journal_args["order_numbers"] == {"SELL": ["S1"], "BUY": ["B1"]}
+    assert journal_args["successful_tickers"] == {"SELL": ["OLD"], "BUY": ["NEW"]}
+
+
+def test_run_skips_requested_tickers_from_dry_run_orders(tmp_path):
+    import scripts.execute_rebalance_from_dry_run as execute_script
+
+    report_path = tmp_path / "dry_run.json"
+    report_path.write_text(
+        json.dumps({
+            "dry_run": True,
+            "as_of_date": "2026-05-08",
+            "price_fallback_count": 0,
+            "price_lookup_failed_count": 0,
+            "price_fallbacks": [],
+            "price_lookup_failures": [],
+            "orders": [
+                {"side": "SELL", "ticker": "000270", "qty": 3, "reason": "done"},
+                {"side": "SELL", "ticker": "012860", "qty": 2, "reason": "done"},
+                {"side": "SELL", "ticker": "023160", "qty": 1, "reason": "next"},
+                {"side": "BUY", "ticker": "066570", "qty": 1, "reason": "next"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    execute_func = MagicMock(return_value={"sold": ["023160"], "bought": ["066570"], "failed": []})
+    args = execute_script.parse_args([
+        "--dry-run-json",
+        str(report_path),
+        "--expected-date",
+        "2026-05-08",
+        "--confirm",
+        "EXECUTE_PAPER_REBALANCE",
+        "--skip-ticker",
+        "000270",
+        "--skip-ticker",
+        "012860",
+    ])
+
+    result = execute_script.run(
+        args,
+        engine_factory=MagicMock(return_value=MagicMock()),
+        execute_func=execute_func,
+        now=datetime(2026, 5, 4, 10, 0, tzinfo=KST),
+    )
+
+    sells = execute_func.call_args.args[1]
+    buys = execute_func.call_args.args[2]
+
+    assert result == 0
+    assert [order.ticker for order in sells] == ["023160"]
+    assert [order.ticker for order in buys] == ["066570"]
+
+
 def test_run_writes_execution_report_json(tmp_path):
     import scripts.execute_rebalance_from_dry_run as execute_script
 
@@ -317,6 +412,35 @@ def test_run_blocks_when_pre_execution_review_fails(tmp_path, capsys):
     assert result == 1
     assert "pre_execution_review_blocked=1" in capsys.readouterr().out
     execute_func.assert_not_called()
+
+
+def test_run_does_not_record_trade_journal_when_pre_execution_review_fails(tmp_path):
+    import scripts.execute_rebalance_from_dry_run as execute_script
+
+    report_path = tmp_path / "dry_run.json"
+    _write_report(report_path)
+    journal_record_func = MagicMock()
+    args = execute_script.parse_args([
+        "--dry-run-json",
+        str(report_path),
+        "--expected-date",
+        "2026-05-08",
+        "--confirm",
+        "EXECUTE_PAPER_REBALANCE",
+        "--review-before-execute",
+    ])
+
+    result = execute_script.run(
+        args,
+        engine_factory=MagicMock(return_value=MagicMock()),
+        execute_func=MagicMock(),
+        review_func=MagicMock(return_value=1),
+        journal_record_func=journal_record_func,
+        now=datetime(2026, 5, 4, 10, 0, tzinfo=KST),
+    )
+
+    assert result == 1
+    journal_record_func.assert_not_called()
 
 
 def test_run_returns_error_when_dry_run_report_is_missing(tmp_path, capsys):

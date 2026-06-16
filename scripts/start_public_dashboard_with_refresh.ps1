@@ -5,7 +5,7 @@ param(
     [int]$RefreshIntervalMinutes = 30,
     [int]$RunTimeoutMinutes = 10,
     [string]$PythonPath = ".\venv\Scripts\python.exe",
-    [string]$RefreshedThrough = "2026-05-15",
+    [string]$RefreshedThrough = "",
     [switch]$IncludeSupplementalDiscovery,
     [switch]$SkipSupplementalSources
 )
@@ -35,9 +35,11 @@ $RefreshArgs = @(
     "-File", "`"$RefreshScript`"",
     "-IntervalMinutes", "$RefreshIntervalMinutes",
     "-RunTimeoutMinutes", "$RunTimeoutMinutes",
-    "-PythonPath", "`"$PythonPath`"",
-    "-RefreshedThrough", "$RefreshedThrough"
+    "-PythonPath", "`"$PythonPath`""
 )
+if ($RefreshedThrough) {
+    $RefreshArgs += @("-RefreshedThrough", "$RefreshedThrough")
+}
 if ($IncludeSupplementalDiscovery) {
     $RefreshArgs += "-IncludeSupplementalDiscovery"
 }

@@ -1,12 +1,12 @@
-"""
-quntbot 전역 설정
+﻿"""
+quntbot ?꾩뿭 ?ㅼ젙
 =================
-모든 파라미터(자금·손절률·팩터 가중치 등)를 한곳에 모아둔 파일.
+紐⑤뱺 ?뚮씪誘명꽣(?먭툑쨌?먯젅瑜졖룻뙥??媛以묒튂 ??瑜??쒓납??紐⑥븘???뚯씪.
 
-원칙:
-- 매매 동작에 영향 가는 숫자는 코드 안에 흩뿌리지 말고 여기로 모은다
-- 환경 의존(API 키, DB 경로)은 .env 에서 읽는다
-- 검증된 기본값을 두되, 백테스트 결과로 조정한다
+?먯튃:
+- 留ㅻℓ ?숈옉???곹뼢 媛???レ옄??肄붾뱶 ?덉뿉 ?⑸퓣由ъ? 留먭퀬 ?ш린濡?紐⑥???
+- ?섍꼍 ?섏〈(API ?? DB 寃쎈줈)? .env ?먯꽌 ?쎈뒗??
+- 寃利앸맂 湲곕낯媛믪쓣 ?먮릺, 諛깊뀒?ㅽ듃 寃곌낵濡?議곗젙?쒕떎
 """
 from __future__ import annotations
 
@@ -17,11 +17,15 @@ from typing import Literal
 
 from dotenv import load_dotenv
 
-# .env 자동 로드 (없어도 에러 안 남)
+# .env ?먮룞 濡쒕뱶 (?놁뼱???먮윭 ????
 load_dotenv()
 
+
+def _csv_tuple(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
 # =============================================================================
-# 경로
+# 寃쎈줈
 # =============================================================================
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_DIR = ROOT_DIR / "data"
@@ -33,7 +37,7 @@ DB_PATH = DATA_DIR / "quntbot.db"
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
 
 # =============================================================================
-# 매매 모드
+# 留ㅻℓ 紐⑤뱶
 # =============================================================================
 TradeMode = Literal["PAPER", "LIVE"]
 TRADE_MODE: TradeMode = os.getenv("TRADE_MODE", "PAPER")  # type: ignore
@@ -54,7 +58,13 @@ class KISConfig:
         "KIS_LIVE_BASE_URL", "https://openapi.koreainvestment.com:9443"
     )
     quote_base_url: str = os.getenv(
-        "KIS_QUOTE_BASE_URL", "https://openapi.koreainvestment.com:9443"
+        "KIS_QUOTE_BASE_URL",
+        os.getenv(
+            "KIS_PAPER_BASE_URL" if TRADE_MODE == "PAPER" else "KIS_LIVE_BASE_URL",
+            "https://openapivts.koreainvestment.com:29443"
+            if TRADE_MODE == "PAPER"
+            else "https://openapi.koreainvestment.com:9443",
+        ),
     )
     request_timeout_sec: int = int(os.getenv("KIS_REQUEST_TIMEOUT_SEC", "10"))
     token_cache_path: Path = Path(
@@ -69,7 +79,7 @@ class KISConfig:
 KIS = KISConfig()
 
 # =============================================================================
-# 텔레그램
+# ?붾젅洹몃옩
 # =============================================================================
 @dataclass(frozen=True)
 class TelegramConfig:
@@ -84,27 +94,6 @@ class TelegramConfig:
 TELEGRAM = TelegramConfig()
 
 
-@dataclass(frozen=True)
-class TelegramSignalConfig:
-    # MTProto 자격증명 (my.telegram.org 에서 발급)
-    api_id: int = int(os.getenv("TELEGRAM_API_ID", "0"))
-    api_hash: str = os.getenv("TELEGRAM_API_HASH", "")
-    # 읽을 채널 username 또는 invite link (예: "morning_brief_channel")
-    channel: str = os.getenv("TELEGRAM_SIGNAL_CHANNEL", "")
-    # 팩터 점수에서 텔레그램 신호 가중치
-    signal_weight: float = float(os.getenv("TELEGRAM_SIGNAL_WEIGHT", "0.5"))
-    # 폴링: 장 시작 전 몇 시부터 채널을 확인할지 (KST)
-    poll_start_hour: int = 6
-    poll_end_hour: int = 9
-    # 한 번 조회 시 가져올 최근 메시지 수
-    fetch_limit: int = int(os.getenv("TELEGRAM_SIGNAL_FETCH_LIMIT", "20"))
-
-    @property
-    def enabled(self) -> bool:
-        return bool(self.api_id and self.api_hash and self.channel)
-
-
-TELEGRAM_SIGNAL = TelegramSignalConfig()
 
 
 @dataclass(frozen=True)
@@ -149,76 +138,84 @@ class DartConfig:
 DART = DartConfig()
 
 # =============================================================================
-# 종목 유니버스
+# 醫낅ぉ ?좊땲踰꾩뒪
 # =============================================================================
 @dataclass(frozen=True)
 class UniverseConfig:
-    # 코스피 / 코스닥 전체 시장을 후보 풀로 사용
+    # 肄붿뒪??/ 肄붿뒪???꾩껜 ?쒖옣???꾨낫 ?濡??ъ슜
     use_kospi: bool = True
     use_kosdaq: bool = True
-    # 최근 평균 거래대금 기준으로 최종 선택할 시장별 상위 종목 수
+    use_etf: bool = False
+    # 理쒓렐 ?됯퇏 嫄곕옒?湲?湲곗??쇰줈 理쒖쥌 ?좏깮???쒖옣蹂??곸쐞 醫낅ぉ ??
     kospi_top_n: int = 400
     kosdaq_top_n: int = 200
-    # 유동성 필터: 최근 N 영업일 평균 거래대금 기준
+    etf_top_n: int = 20
+    # ?좊룞???꾪꽣: 理쒓렐 N ?곸뾽???됯퇏 嫄곕옒?湲?湲곗?
     liquidity_lookback_days: int = 5
-    min_avg_trading_value: float = 5_000_000_000   # 50억원
-    # 자동 제외 종목 유형
-    exclude_preferred: bool = True     # 우선주 (ticker 끝자리 != '0')
-    exclude_managed: bool = True       # 관리종목
-    exclude_warning: bool = True       # 투자주의·경고·위험
-    exclude_suspended: bool = True     # 거래정지
-    exclude_unverifiable_status: bool = True  # 상태 확인 실패 시 신규 매수 후보 제외
+    min_avg_trading_value: float = 5_000_000_000   # 50?듭썝
+    # ?먮룞 ?쒖쇅 醫낅ぉ ?좏삎
+    exclude_preferred: bool = True     # ?곗꽑二?(ticker ?앹옄由?!= '0')
+    exclude_managed: bool = True       # 愿由ъ쥌紐?
+    exclude_warning: bool = True       # ?ъ옄二쇱쓽쨌寃쎄퀬쨌?꾪뿕
+    exclude_suspended: bool = True     # 嫄곕옒?뺤?
+    exclude_unverifiable_status: bool = True  # ?곹깭 ?뺤씤 ?ㅽ뙣 ???좉퇋 留ㅼ닔 ?꾨낫 ?쒖쇅
 
 
 UNIVERSE = UniverseConfig()
 
 # =============================================================================
-# 팩터 가중치 & 점수 계산
+# ?⑺꽣 媛以묒튂 & ?먯닔 怨꾩궛
 # =============================================================================
 @dataclass(frozen=True)
 class FactorConfig:
-    # 가치 팩터 (점수 ↑ = 저평가)
-    value_weight: float = 1.0 + (0.25 / 3)
-    # 퀄리티 팩터 (점수 ↑ = 우량) — ROE(EPS/BPS) 기반
-    quality_weight: float = 1.0 + (0.25 / 3)
-    # 모멘텀 팩터 (점수 ↑ = 강한 추세)
-    momentum_weight: float = 1.0 + (0.25 / 3)
-    # 배당수익률 팩터 (점수 ↑ = 고배당). 기존 0.5의 절반을 핵심 3팩터에 재배분한다.
-    yield_weight: float = 0.25
-    # 텔레그램 모닝 신호 팩터 (점수 ↑ = 강한 수혜 신호)
-    telegram_weight: float = 0.5
-    # Busanstock 뉴스/컨센서스 보조 팩터. 기존 퀀트 점수를 살짝만 보정한다.
-    busanstock_weight: float = 0.3
-    # 투자자별 수급 보조 팩터. 개인 단독 매수/외국인·기관 매도는 감점한다.
-    investor_flow_weight: float = 0.3
-    # 국내외 증권사 리서치 리포트 보조 팩터. 의견·목표가 변화 기반으로 작게 반영한다.
-    research_report_weight: float = 0.25
+    value_points: float = 25.0
+    quality_points: float = 25.0
+    momentum_points: float = 20.0
+    yield_points: float = 5.0
+    technical_points: float = 15.0
+    auxiliary_points: float = 10.0
+    busanstock_auxiliary_share: float = 1 / 3
+    investor_flow_auxiliary_share: float = 1 / 3
+    research_report_auxiliary_share: float = 1 / 3
 
-    # 모멘텀 룩백 기간 (영업일)
-    momentum_lookback_days: int = 126   # 약 6개월
+    # 紐⑤찘? 猷⑸갚 湲곌컙 (?곸뾽??
+    momentum_lookback_days: int = 126   # ??6媛쒖썡
 
-    # 점수 계산 방식: "zscore" 또는 "rank"
+    # ?먯닔 怨꾩궛 諛⑹떇: "zscore" ?먮뒗 "rank"
     # rank keeps factor scores bounded when local DB z-score outliers dominate.
     scoring_method: Literal["zscore", "rank"] = "rank"
+
+    @property
+    def score_budget_total(self) -> float:
+        return (
+            self.value_points
+            + self.quality_points
+            + self.momentum_points
+            + self.yield_points
+            + self.technical_points
+            + self.auxiliary_points
+        )
 
 
 FACTOR = FactorConfig()
 
 # =============================================================================
-# 포트폴리오 / 자금 관리
+# ?ы듃?대━??/ ?먭툑 愿由?
 # =============================================================================
 @dataclass(frozen=True)
 class PortfolioConfig:
-    # MVP 기본값 (모의투자 1억 기준)
-    initial_capital: float = 100_000_000  # 1억원 (모의투자)
+    # MVP 湲곕낯媛?(紐⑥쓽?ъ옄 1??湲곗?)
+    initial_capital: float = 100_000_000  # 1?듭썝 (紐⑥쓽?ъ옄)
 
-    # 보유 종목 수
-    n_holdings: int = 20
+    # 蹂댁쑀 醫낅ぉ ??
+    n_holdings: int = 30
 
-    # 종목별 비중 ("equal" = 균등 / "score_weighted" = 점수 비례)
-    weighting: Literal["equal", "score_weighted"] = "equal"
+    # 醫낅ぉ蹂?鍮꾩쨷 ("equal" = 洹좊벑 / "score_weighted" = ?먯닔 鍮꾨?)
+    weighting: Literal["equal", "score_weighted"] = "score_weighted"
+    min_position_weight: float = 0.03
+    max_position_weight: float = 0.15
 
-    # 종목당 매수 가능 가격 필터: 할당 금액 < 1주 가격이면 자동 제외
+    # 醫낅ぉ??留ㅼ닔 媛??媛寃??꾪꽣: ?좊떦 湲덉븸 < 1二?媛寃⑹씠硫??먮룞 ?쒖쇅
     enforce_price_filter: bool = True
     max_abs_open_gap_pct: float = 0.20
 
@@ -230,33 +227,120 @@ class PortfolioConfig:
 PORTFOLIO = PortfolioConfig()
 
 # =============================================================================
-# 매도 규칙 (3중 안전장치)
+# 留ㅻ룄 洹쒖튃 (3以??덉쟾?μ튂)
 # =============================================================================
 @dataclass(frozen=True)
 class ExitRulesConfig:
-    # 손절: 매수가 대비 -X% 도달 시 즉시 시장가 매도
-    stop_loss_pct: float = -0.08   # -8%
+    # ?먯젅: 留ㅼ닔媛 ?鍮?-X% ?꾨떖 ??利됱떆 ?쒖옣媛 留ㅻ룄
+    stop_loss_pct: float = -0.07   # -7%
 
-    # 트레일링 스톱: 보유 후 최고가 대비 -X% 하락 시 매도
-    trailing_stop_pct: float = -0.10  # -10%
+    # ?몃젅?쇰쭅 ?ㅽ넲: 蹂댁쑀 ??理쒓퀬媛 ?鍮?-X% ?섎씫 ??留ㅻ룄
+    trailing_stop_pct: float = -0.08  # -8%
+    post_profit_trailing_stop_pct: float = -0.10  # -10%
     # Calendar days to block rebuying a ticker after a stop exit. 0 preserves prior behavior.
-    stop_cooldown_days: int = 0
+    stop_cooldown_days: int = 3
+    profit_take_pct: float = 0.16
+    profit_take_sell_fraction: float = 0.45
+    breakeven_stop_pct: float = 0.0
+    enable_atr_stop: bool = True
+    atr_window: int = 14
+    atr_multiplier: float = 2.2
+    # True면 ATR 스톱 사용 가능 종목은 고정 -stop_loss_pct 손절을 적용하지 않고
+    # ATR 스톱만으로 하방을 통제한다(완화). ATR 데이터가 없으면 고정 손절을 폴백으로 유지.
+    # 기본 False = 기존 동작(고정 손절 + ATR 스톱 병행) 유지.
+    atr_only_stop: bool = False
 
-    # 리밸런싱: 점수 하위로 밀려나면 교체 (Phase 2 점수 엔진과 연동)
+    # 由щ갭?곗떛: ?먯닔 ?섏쐞濡?諛?ㅻ굹硫?援먯껜 (Phase 2 ?먯닔 ?붿쭊怨??곕룞)
     use_rebalance_exit: bool = True
 
 
 EXIT_RULES = ExitRulesConfig()
 
+
+@dataclass(frozen=True)
+class MarketRiskConfig:
+    enable_overlay: bool = True
+    rsi_window: int = 14
+    rsi_overheat_threshold: float = 75.0
+    one_market_overheat_cash_target: float = 0.15
+    both_markets_overheat_cash_target: float = 0.25
+    nasdaq_moderate_drop_pct: float = -0.02
+    nasdaq_severe_drop_pct: float = -0.035
+    nasdaq_moderate_cash_target: float = 0.20
+    nasdaq_severe_cash_target: float = 0.35
+
+
+MARKET_RISK = MarketRiskConfig()
+
+
+@dataclass(frozen=True)
+class MacroRiskConfig:
+    enable_overlay: bool = True
+    moderate_cash_target: float = 0.20
+    severe_cash_target: float = 0.40
+    max_cash_target: float = 0.50
+    risk_on_buy_multiplier: float = 1.10
+    severe_risk_on_buy_multiplier: float = 1.20
+    intraday_dry_run_only: bool = True
+    fred_api_key: str = os.getenv("FRED_API_KEY", "")
+
+
+MACRO_RISK = MacroRiskConfig()
+
+
+@dataclass(frozen=True)
+class InverseEtfHedgeConfig:
+    enabled: bool = os.getenv("INVERSE_ETF_HEDGE_ENABLED", "true").lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+    allowed_tickers: tuple[str, ...] = field(
+        default_factory=lambda: _csv_tuple(os.getenv("INVERSE_ETF_ALLOWED_TICKERS", ""))
+    )
+    allow_leveraged: bool = os.getenv("INVERSE_ETF_ALLOW_LEVERAGED", "true").lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+    leveraged_tickers: tuple[str, ...] = field(
+        default_factory=lambda: _csv_tuple(os.getenv("INVERSE_ETF_LEVERAGED_TICKERS", ""))
+    )
+    max_total_weight: float = float(os.getenv("INVERSE_ETF_MAX_TOTAL_WEIGHT", "0.15"))
+    max_1x_weight: float = float(os.getenv("INVERSE_ETF_MAX_1X_WEIGHT", "0.10"))
+    max_2x_weight: float = float(os.getenv("INVERSE_ETF_MAX_2X_WEIGHT", "0.05"))
+    moderate_target_weight: float = float(os.getenv("INVERSE_ETF_MODERATE_TARGET_WEIGHT", "0.05"))
+    severe_target_weight: float = float(os.getenv("INVERSE_ETF_SEVERE_TARGET_WEIGHT", "0.10"))
+    severe_2x_target_weight: float = float(os.getenv("INVERSE_ETF_SEVERE_2X_TARGET_WEIGHT", "0.03"))
+    overbought_rsi_threshold: float = float(os.getenv("INVERSE_ETF_OVERBOUGHT_RSI_THRESHOLD", "75"))
+    severe_overbought_rsi_threshold: float = float(
+        os.getenv("INVERSE_ETF_SEVERE_OVERBOUGHT_RSI_THRESHOLD", "80")
+    )
+    market_drop_threshold: float = float(os.getenv("INVERSE_ETF_MARKET_DROP_THRESHOLD", "-0.03"))
+    severe_market_drop_threshold: float = float(
+        os.getenv("INVERSE_ETF_SEVERE_MARKET_DROP_THRESHOLD", "-0.05")
+    )
+    require_market_confirmation: bool = os.getenv(
+        "INVERSE_ETF_REQUIRE_MARKET_CONFIRMATION", "false"
+    ).lower() in ("1", "true", "yes")
+    max_holding_days: int = int(os.getenv("INVERSE_ETF_MAX_HOLDING_DAYS", "10"))
+    stop_loss_pct: float = float(os.getenv("INVERSE_ETF_STOP_LOSS_PCT", "-0.07"))
+    take_profit_pct: float = float(os.getenv("INVERSE_ETF_TAKE_PROFIT_PCT", "0.12"))
+
+
+INVERSE_ETF = InverseEtfHedgeConfig()
+
 # =============================================================================
-# 리밸런싱 스케줄
+# 由щ갭?곗떛 ?ㅼ?以?
 # =============================================================================
 @dataclass(frozen=True)
 class RebalanceConfig:
-    # 정기 리밸런싱 주기
+    # ?뺢린 由щ갭?곗떛 二쇨린
     frequency: Literal["daily", "weekly", "monthly"] = "weekly"
+    sell_rank_buffer: int = 40
+    min_holding_trading_days: int = 0
 
-    # 장 시작 전 점수 재계산 시각 (HH:MM, KST)
+    # ???쒖옉 ???먯닔 ?ш퀎???쒓컖 (HH:MM, KST)
     # Pre-market data sync time (HH:MM, KST)
     pre_market_sync_time: str = "08:40"
 
@@ -281,81 +365,81 @@ class RebalanceConfig:
     # Daily rebalance time (HH:MM, KST)
     rebalance_time: str = "09:05"
 
-    # 이벤트 기반 리밸런싱 (강한 신호 시 즉시 실행)
+    # ?대깽??湲곕컲 由щ갭?곗떛 (媛뺥븳 ?좏샇 ??利됱떆 ?ㅽ뻾)
     enable_event_driven: bool = True
 
 
 REBALANCE = RebalanceConfig()
 
 # =============================================================================
-# 운영 안전장치 (필수)
+# ?댁쁺 ?덉쟾?μ튂 (?꾩닔)
 # =============================================================================
 @dataclass(frozen=True)
 class SafetyConfig:
-    # 일일 매매 횟수 한도
-    max_daily_buys: int = 10
-    max_daily_sells: int = 10
+    # ?쇱씪 留ㅻℓ ?잛닔 ?쒕룄
+    max_daily_buys: int = 30
+    max_daily_sells: int = 30
 
-    # 일일 손실 한도 도달 시 당일 모든 매매 중단
+    # ?쇱씪 ?먯떎 ?쒕룄 ?꾨떖 ???좉퇋 留ㅼ닔 以묐떒. ?꾪뿕 異뺤냼??留ㅻ룄??怨꾩냽 ?덉슜?쒕떎.
     daily_loss_limit_pct: float = -0.03  # -3%
 
-    # 체결 실패 시 재시도 횟수
+    # 泥닿껐 ?ㅽ뙣 ???ъ떆???잛닔
     order_retry_count: int = 3
     order_retry_delay_sec: int = 2
 
-    # 봇 헬스체크 주기 (분)
+    # 遊??ъ뒪泥댄겕 二쇨린 (遺?
     healthcheck_interval_min: int = 60
 
 
 SAFETY = SafetyConfig()
 
 # =============================================================================
-# 수수료·세금 (백테스트 정확도용)
+# ?섏닔猷뙿룹꽭湲?(諛깊뀒?ㅽ듃 ?뺥솗?꾩슜)
 # =============================================================================
 @dataclass(frozen=True)
 class CostConfig:
-    # 매수·매도 수수료 (KIS 영웅문S 기준 약 0.015%)
+    # 留ㅼ닔쨌留ㅻ룄 ?섏닔猷?(KIS ?곸썒臾퇣 湲곗? ??0.015%)
     commission_rate: float = 0.00015
 
-    # 거래세 (매도 시에만), 2026-01-01 시행 기준
-    # 코스피: 0.20% = 증권거래세 0.05% + 농어촌특별세 0.15%
-    # 코스닥: 0.20% = 증권거래세 0.20%
+    # 嫄곕옒??(留ㅻ룄 ?쒖뿉留?, 2026-01-01 ?쒗뻾 湲곗?
+    # 肄붿뒪?? 0.20% = 利앷텒嫄곕옒??0.05% + ?띿뼱珥뚰듅蹂꾩꽭 0.15%
+    # 肄붿뒪?? 0.20% = 利앷텒嫄곕옒??0.20%
     tax_rate_kospi: float = 0.0020
     tax_rate_kosdaq: float = 0.0020
 
-    # 슬리피지 (예상 체결가 - 실제 체결가) 추정치
+    # ?щ━?쇱? (?덉긽 泥닿껐媛 - ?ㅼ젣 泥닿껐媛) 異붿젙移?
     slippage_rate: float = 0.0010  # 0.1%
 
 
 COST = CostConfig()
 
 # =============================================================================
-# 백테스트
+# 諛깊뀒?ㅽ듃
 # =============================================================================
 @dataclass(frozen=True)
 class BacktestConfig:
     start_date: str = "2020-01-01"
     end_date: str = "2025-12-31"
-    benchmark_ticker: str = "069500"  # KODEX 200 ETF (벤치마크)
+    benchmark_ticker: str = "069500"  # KODEX 200 ETF (踰ㅼ튂留덊겕)
 
 
 BACKTEST = BacktestConfig()
 
 # =============================================================================
-# 로깅
+# 濡쒓퉭
 # =============================================================================
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE = LOG_DIR / "quntbot.log"
 
 
 # =============================================================================
-# 검증 (import 시 자동 실행)
+# 寃利?(import ???먮룞 ?ㅽ뻾)
 # =============================================================================
 def validate() -> list[str]:
-    """설정 일관성 체크. 문제가 있으면 경고 메시지 리스트 반환."""
+    """?ㅼ젙 ?쇨???泥댄겕. 臾몄젣媛 ?덉쑝硫?寃쎄퀬 硫붿떆吏 由ъ뒪??諛섑솚."""
     warnings = []
     if TRADE_MODE == "LIVE" and not KIS.app_key:
-        warnings.append("LIVE 모드인데 KIS_APP_KEY 가 비어있습니다.")
+        warnings.append("LIVE 紐⑤뱶?몃뜲 KIS_APP_KEY 媛 鍮꾩뼱?덉뒿?덈떎.")
     if not DART.enabled:
         warnings.append("DART_API_KEY is empty; quality factors will stay unavailable.")
     if DART.requests_per_minute <= 0 or DART.daily_quota <= 0:
@@ -363,16 +447,85 @@ def validate() -> list[str]:
     if KIS.request_timeout_sec <= 0:
         warnings.append("KIS request timeout must be greater than 0. Check .env.")
     if PORTFOLIO.n_holdings <= 0:
-        warnings.append("PORTFOLIO.n_holdings 는 1 이상이어야 합니다.")
+        warnings.append("PORTFOLIO.n_holdings ??1 ?댁긽?댁뼱???⑸땲??")
+    if not 0 < PORTFOLIO.min_position_weight <= PORTFOLIO.max_position_weight <= 1:
+        warnings.append("PORTFOLIO position weights must satisfy 0 < min <= max <= 1.")
     if EXIT_RULES.stop_loss_pct >= 0:
-        warnings.append("EXIT_RULES.stop_loss_pct 는 음수여야 합니다.")
+        warnings.append("EXIT_RULES.stop_loss_pct ???뚯닔?ъ빞 ?⑸땲??")
     if EXIT_RULES.trailing_stop_pct >= 0:
-        warnings.append("EXIT_RULES.trailing_stop_pct 는 음수여야 합니다.")
+        warnings.append("EXIT_RULES.trailing_stop_pct ???뚯닔?ъ빞 ?⑸땲??")
+    if EXIT_RULES.post_profit_trailing_stop_pct >= 0:
+        warnings.append("EXIT_RULES.post_profit_trailing_stop_pct must be negative.")
+    if EXIT_RULES.profit_take_pct <= 0:
+        warnings.append("EXIT_RULES.profit_take_pct must be positive.")
+    if not 0 < EXIT_RULES.profit_take_sell_fraction < 1:
+        warnings.append("EXIT_RULES.profit_take_sell_fraction must be between 0 and 1.")
+    if EXIT_RULES.atr_window <= 0:
+        warnings.append("EXIT_RULES.atr_window must be greater than 0.")
+    if EXIT_RULES.atr_multiplier <= 0:
+        warnings.append("EXIT_RULES.atr_multiplier must be greater than 0.")
+    for name in (
+        "one_market_overheat_cash_target",
+        "both_markets_overheat_cash_target",
+        "nasdaq_moderate_cash_target",
+        "nasdaq_severe_cash_target",
+    ):
+        value = getattr(MARKET_RISK, name)
+        if not 0 <= value <= 1:
+            warnings.append(f"MARKET_RISK.{name} must be between 0 and 1.")
+    for name in ("moderate_cash_target", "severe_cash_target", "max_cash_target"):
+        value = getattr(MACRO_RISK, name)
+        if not 0 <= value <= 1:
+            warnings.append(f"MACRO_RISK.{name} must be between 0 and 1.")
+    if MACRO_RISK.moderate_cash_target > MACRO_RISK.severe_cash_target:
+        warnings.append("MACRO_RISK.moderate_cash_target must be <= severe_cash_target.")
+    if MACRO_RISK.severe_cash_target > MACRO_RISK.max_cash_target:
+        warnings.append("MACRO_RISK.severe_cash_target must be <= max_cash_target.")
+    if MACRO_RISK.risk_on_buy_multiplier <= 0 or MACRO_RISK.severe_risk_on_buy_multiplier <= 0:
+        warnings.append("MACRO_RISK buy multipliers must be positive.")
+    for name in (
+        "max_total_weight",
+        "max_1x_weight",
+        "max_2x_weight",
+        "moderate_target_weight",
+        "severe_target_weight",
+        "severe_2x_target_weight",
+    ):
+        value = getattr(INVERSE_ETF, name)
+        if not 0 <= value <= 1:
+            warnings.append(f"INVERSE_ETF.{name} must be between 0 and 1.")
+    if INVERSE_ETF.max_1x_weight + INVERSE_ETF.max_2x_weight > INVERSE_ETF.max_total_weight + 1e-9:
+        warnings.append("INVERSE_ETF 1x/2x caps must not exceed max_total_weight.")
+    if INVERSE_ETF.severe_2x_target_weight > INVERSE_ETF.max_2x_weight:
+        warnings.append("INVERSE_ETF.severe_2x_target_weight must be <= max_2x_weight.")
+    if INVERSE_ETF.market_drop_threshold < INVERSE_ETF.severe_market_drop_threshold:
+        warnings.append("INVERSE_ETF.market_drop_threshold must be >= severe_market_drop_threshold.")
+    if INVERSE_ETF.max_holding_days <= 0:
+        warnings.append("INVERSE_ETF.max_holding_days must be greater than 0.")
+    if INVERSE_ETF.stop_loss_pct >= 0:
+        warnings.append("INVERSE_ETF.stop_loss_pct must be negative.")
+    if INVERSE_ETF.take_profit_pct <= 0:
+        warnings.append("INVERSE_ETF.take_profit_pct must be positive.")
+    if MARKET_RISK.rsi_window <= 0:
+        warnings.append("MARKET_RISK.rsi_window must be greater than 0.")
+    if MARKET_RISK.nasdaq_severe_drop_pct > MARKET_RISK.nasdaq_moderate_drop_pct:
+        warnings.append("MARKET_RISK.nasdaq_severe_drop_pct must be <= nasdaq_moderate_drop_pct.")
+    if REBALANCE.sell_rank_buffer < PORTFOLIO.n_holdings:
+        warnings.append("REBALANCE.sell_rank_buffer must be >= PORTFOLIO.n_holdings.")
+    if abs(FACTOR.score_budget_total - 100.0) > 1e-9:
+        warnings.append("FACTOR point budget must total 100.")
+    auxiliary_share_total = (
+        FACTOR.busanstock_auxiliary_share
+        + FACTOR.investor_flow_auxiliary_share
+        + FACTOR.research_report_auxiliary_share
+    )
+    if abs(auxiliary_share_total - 1.0) > 1e-9:
+        warnings.append("FACTOR auxiliary shares must total 1.")
     return warnings
 
 
 if __name__ == "__main__":
-    # python config.py 로 직접 실행 시 현재 설정 출력 + 검증
+    # python config.py 濡?吏곸젒 ?ㅽ뻾 ???꾩옱 ?ㅼ젙 異쒕젰 + 寃利?
     import json
 
     snapshot = {
@@ -383,19 +536,22 @@ if __name__ == "__main__":
         "FACTOR": FACTOR.__dict__,
         "PORTFOLIO": {**PORTFOLIO.__dict__, "per_position_cash": PORTFOLIO.per_position_cash},
         "EXIT_RULES": EXIT_RULES.__dict__,
+        "MARKET_RISK": MARKET_RISK.__dict__,
+        "MACRO_RISK": MACRO_RISK.__dict__,
+        "INVERSE_ETF": INVERSE_ETF.__dict__,
         "REBALANCE": REBALANCE.__dict__,
         "SAFETY": SAFETY.__dict__,
         "COST": COST.__dict__,
         "BACKTEST": BACKTEST.__dict__,
         "TELEGRAM_ENABLED": TELEGRAM.enabled,
-        "TELEGRAM_SIGNAL_ENABLED": TELEGRAM_SIGNAL.enabled,
     }
     print(json.dumps(snapshot, indent=2, ensure_ascii=False, default=str))
 
     issues = validate()
     if issues:
-        print("\n[경고]")
+        print("\n[寃쎄퀬]")
         for w in issues:
             print(f"  - {w}")
     else:
-        print("\n[OK] 설정 일관성 통과")
+        print("\n[OK] ?ㅼ젙 ?쇨????듦낵")
+

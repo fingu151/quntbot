@@ -1,5 +1,351 @@
 # quntbot Progress Log
 
+## 2026-06-15 Post-profit trailing stop split
+
+- Kept the first profit take unchanged: +16% trigger and 45% sell fraction.
+- Added a post-profit-only trailing stop threshold:
+  `EXIT_RULES.post_profit_trailing_stop_pct=-0.10`.
+- Kept legacy `EXIT_RULES.trailing_stop_pct=-0.08` separate, so only the
+  trailing bucket left after first profit take waits for a -10% drawdown from
+  its recorded peak.
+- The remaining post-profit quantity split stays unchanged: half to trailing,
+  remainder to breakeven.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Follow-up audit
+
+- Found and fixed one blocking inconsistency: the live engine used the new
+  post-profit-only -10% trailing threshold, but the backtest engine still used
+  `trailing_stop_pct` for post-profit trailing exits.
+- Added `post_profit_trailing_stop_pct` to the backtest engine, Phase 3
+  backtest CLI, backtest matrix CLI, and Adaptive Alpha wrappers so simulated
+  exits match the live staged exit monitor.
+
+### Verification
+
+- RED:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_post_profit_trailing_waits_until_ten_pct_drawdown tests\test_strategy_defaults.py::test_adopted_exit_strategy_defaults_match_tuned_adaptive_alpha -q`
+  failed because the post-profit field did not exist and the engine sold the
+  trailing bucket at a -9% drawdown.
+- GREEN:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_post_profit_trailing_waits_until_ten_pct_drawdown tests\test_strategy_defaults.py::test_adopted_exit_strategy_defaults_match_tuned_adaptive_alpha -q`
+  -> `2 passed`.
+- Related trading tests:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py tests\trading\test_rebalance_policy.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py -q`
+  -> `80 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall config.py src\trading scripts\dry_run_rebalance.py tests\trading`
+  -> passed.
+- Follow-up RED:
+  `.\venv\Scripts\python.exe -m pytest tests\backtest\test_backtest_engine.py::test_run_backtest_post_profit_trailing_uses_dedicated_default_threshold tests\backtest\test_run_script.py::test_parse_args_accepts_stop_thresholds tests\backtest\test_run_script.py::test_run_passes_stop_thresholds_to_backtest tests\strategies\test_adaptive_alpha.py::test_run_adaptive_alpha_backtest_passes_isolated_strategy_defaults -q`
+  failed because backtests still sold at a -9% post-profit drawdown and the
+  CLI/wrapper paths did not expose the new threshold.
+- Follow-up GREEN:
+  same command -> `4 passed`.
+- Broader related tests:
+  `.\venv\Scripts\python.exe -m pytest tests\test_strategy_defaults.py tests\trading\test_engine.py tests\trading\test_rebalance_policy.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py tests\backtest\test_backtest_engine.py tests\backtest\test_run_script.py tests\strategies\test_adaptive_alpha.py tests\strategies\test_run_adaptive_alpha_matrix.py -q`
+  -> `151 passed`.
+- Broader syntax check:
+  `.\venv\Scripts\python.exe -m compileall config.py src\trading src\backtest src\strategies scripts\run_phase3_backtest.py scripts\run_backtest_matrix.py scripts\run_adaptive_alpha_backtest.py scripts\run_adaptive_alpha_matrix.py scripts\dry_run_rebalance.py tests\trading tests\backtest tests\strategies`
+  -> passed.
+
+## 2026-06-15 Post-profit exit protection fix
+
+- Confirmed a live-rule mismatch: after the first profit take, the staged exit
+  monitor could still hit the fixed full-position stop before the intended
+  trailing/breakeven residual buckets. This could close the whole remaining
+  position instead of letting the post-profit buckets run.
+- Added a rebalance protection gate for tickers with `profit_take_done=true`
+  and active `trailing_qty` or `breakeven_qty`, so ordinary rank-buffer
+  rebalance sells do not fully clear those residual buckets.
+- Current local `data/exit_state.json` has 36 states and 6 protected
+  post-profit tickers: `005850`, `028050`, `028260`, `034730`, `069960`,
+  `383220`.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- RED:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_does_not_full_stop_after_profit_take tests\trading\test_rebalance_policy.py -q`
+  first failed because the rebalance protection helper did not exist and then
+  because `exit_full_stop` still sold the full post-profit position.
+- GREEN:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_does_not_full_stop_after_profit_take tests\trading\test_rebalance_policy.py -q`
+  -> `3 passed`.
+- Related trading tests:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py tests\trading\test_rebalance_policy.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py -q`
+  -> `79 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall src\trading scripts\dry_run_rebalance.py tests\trading\test_engine.py tests\trading\test_rebalance_policy.py`
+  -> passed.
+
+## 2026-06-11 US macro exposure overlay
+
+### Completed
+
+- Added a unified macro exposure overlay that combines US index moves, bond
+  yield moves, and official macro indicator release rows into one portfolio
+  exposure adjustment.
+- Added `MacroRiskConfig` defaults and `macro_indicator_releases` storage for
+  CPI/Core CPI, labor, and rate-policy release data.
+- Added `scripts/sync_macro_indicators.py` for FRED-backed official macro data
+  sync. Without `FRED_API_KEY`, the fetcher returns no rows and the macro layer
+  records missing source status instead of blocking orders.
+- Added macro risk reduction orders that can proportionally reduce current
+  holdings to a target cash ratio without duplicating existing rebalance sells.
+- Wired macro adjustment into dry-run rebalance reports, scheduler rebalance
+  order matching, intraday macro dry-run reports, and backtests.
+- Added `scripts/run_intraday_macro_risk_dry_run.py`; it writes reduction
+  candidates only and never submits PAPER/LIVE orders.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\trading tests\backtest tests\data -q`
+  -> `371 passed`.
+- `.\venv\Scripts\python.exe -m compileall config.py src scripts tests`
+  -> passed.
+- `.\venv\Scripts\python.exe -m pytest tests -q`
+  -> `649 passed`.
+- `.\venv\Scripts\python.exe scripts\check_rebalance_readiness.py`
+  -> blocked safely with `execution_ready=false`; preflight was clean, but
+  market time was outside weekday 09:00-15:20 KST.
+
+## 2026-06-11 Quntbot improvement roadmap implementation slice
+
+### Completed
+
+- Removed MTProto Telegram stock-signal scoring paths while keeping Telegram
+  notifier configuration and notification code intact.
+- Replaced factor score output with a 100-point budget:
+  Value 25, Quality 25, Momentum 20, Yield 5, Technical 15, Auxiliary 10.
+- Added technical scoring plus a narrower hard filter for extreme overheat or
+  volatility.
+- Added `Stock.instrument_type` with SQLite migration support and ETF universe
+  collection scaffolding.
+- Added ETF backtest transaction-tax branching with ETF sells using 0% tax.
+- Updated rank and public snapshot output to expose `technical` and `auxiliary`
+  score fields instead of Telegram score fields.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\factors\test_engine.py::test_factor_score_contract_has_no_telegram_score_and_uses_100_point_budget tests\factors\test_engine.py::test_technical_score_contributes_points_without_requiring_old_filter_pass tests\data\test_database.py::test_create_tables_creates_phase1_tables tests\data\test_collectors.py::test_pykrx_provider_can_add_etf_universe_rows tests\backtest\test_backtest_engine.py::test_sell_uses_zero_transaction_tax_for_etf_market -q`
+  -> `5 passed`.
+- `.\venv\Scripts\python.exe -m pytest tests\factors tests\data tests\backtest\test_backtest_engine.py tests\test_config.py tests\test_generate_public_portfolio_snapshot.py tests\strategies\test_adaptive_alpha.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py -q`
+  -> `207 passed`.
+- `.\venv\Scripts\python.exe -m compileall config.py src scripts tests`
+  -> passed.
+- `.\venv\Scripts\python.exe -m pytest tests -q`
+  -> `634 passed`.
+- `.\venv\Scripts\python.exe scripts\check_rebalance_readiness.py`
+  -> blocked safely with `execution_ready=false` because market time was outside
+  weekday 09:00-15:20 KST and the latest dry-run report was stale
+  (`as_of_date=2026-06-10`, expected `2026-06-11`).
+
+## 2026-06-03 Daily buy limit raised to 30
+
+### Completed
+
+- Raised `SAFETY.max_daily_buys` from `20` to `30` after the 2026-06-03 dry-run
+  rebalance produced `buy_count=24` and was blocked at `prepare_review` by the
+  prior `24/20` daily buy limit.
+- Updated the default-parameter regression test and the rebalance preflight
+  guard test so buys above `30` remain blocked.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\test_strategy_defaults.py tests\trading\test_rebalancer.py::test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit -q`
+  -> 2 passed.
+
+## 2026-06-02 Live ATR stop integration
+
+### Completed
+
+- Added live ATR stop support to `TradingEngine.check_exit_rules()`.
+- ATR stop now applies before the fixed percentage stop for positions that have
+  not completed the first profit-take stage:
+  - ATR source: injected `atr_lookup(ticker, as_of_date, window)`;
+  - stop price: `avg_price - ATR * EXIT_RULES.atr_multiplier`;
+  - order path: full-position risk exit through `sell(..., enforce_daily_limit=False)`.
+- Added DB-backed ATR calculation in `src.trading.scheduler` using
+  `daily_prices` true range over `EXIT_RULES.atr_window`.
+- Wired ATR lookup into both:
+  - `run_scheduler()`;
+  - `scripts.daily_paper_run.run_intraday_stop_monitor()`.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_atr_stop_sells_before_static_stop -q`
+  failed because `TradingEngine.__init__()` did not accept `atr_lookup`.
+- RED:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_scheduler.py::test_load_daily_price_atr_uses_true_range tests\trading\test_scheduler.py::test_run_scheduler_injects_atr_lookup_into_trading_engine -q`
+  failed because scheduler had no ATR loader and did not inject an ATR lookup.
+- RED:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_daily_paper_run.py::test_intraday_monitor_registers_only_stop_monitor -q`
+  failed because `daily_paper_run` did not create a DB-backed ATR lookup.
+- GREEN:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py tests\trading\test_scheduler.py tests\trading\test_daily_paper_run.py tests\trading\test_rebalancer.py tests\trading\test_execute_rebalance_from_dry_run.py -q`
+  -> `100 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall config.py src\trading scripts\daily_paper_run.py tests\trading`
+  -> passed.
+
+## 2026-05-28 PAPER execution HTTP 500 handling
+
+### Completed
+
+- Investigated a partial PAPER rebalance execution failure:
+  - `000270` sell was accepted;
+  - `012860` sell was accepted;
+  - the next `order-cash` call returned HTTP `500`;
+  - `KisClient.place_order()` raised `requests.exceptions.HTTPError`;
+  - `execute_rebalance()` only caught `RuntimeError`, so the script crashed
+    instead of recording a per-ticker failure summary.
+- Updated `execute_rebalance()` to catch order-level exceptions and append the
+  ticker to `failed`, allowing the loop to continue and return a final summary.
+- Added `--skip-ticker` to `scripts/execute_rebalance_from_dry_run.py` so a
+  partial run can be resumed without retrying already accepted tickers.
+- No additional live/PAPER orders were submitted during this fix.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_rebalancer.py -q`
+  failed because a raised `Exception("500 Server Error")` escaped the sell/buy
+  loops.
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_execute_rebalance_from_dry_run.py -q`
+  failed because `--skip-ticker` was not recognized.
+- GREEN:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_execute_rebalance_from_dry_run.py tests\trading\test_rebalancer.py -q`
+  -> `38 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall src\trading scripts\execute_rebalance_from_dry_run.py tests\trading`
+  -> passed.
+
+## 2026-05-28 Rebalance sell cap aligned with 30-stock portfolio
+
+### Completed
+
+- Investigated the latest prepare/rebalance blocker:
+  - `data/dry_run_rebalance_latest.json` has `as_of_date=2026-05-28`;
+  - `holdings_count=37`;
+  - `target_count=30`;
+  - `sell_count=18`;
+  - `buy_count=10`;
+  - preflight blocked because the old daily sell limit was `10`.
+- Raised `SAFETY.max_daily_sells` from `10` to `30`, matching the current
+  30-stock portfolio design and allowing today's `18` planned position-cleanup
+  sells.
+- Kept the sell limit active: dry-run preflight now allows up to `30` sells and
+  still blocks `31+` planned sells.
+- No order path was executed during verification.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_rebalancer.py -q`
+  failed on `sell_count=30` with `daily sell limit would be exceeded (30/10)`.
+- GREEN:
+  - `.\venv\Scripts\python.exe -m pytest tests\trading\test_rebalancer.py -q`
+    -> `22 passed`;
+  - `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py -q`
+    -> `30 passed`;
+  - `.\venv\Scripts\python.exe -m pytest tests\trading\test_prepare_rebalance_for_execution.py tests\trading\test_check_rebalance_readiness.py tests\trading\test_scheduler.py -q`
+    -> `29 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall config.py src\trading scripts\prepare_rebalance_for_execution.py scripts\check_rebalance_readiness.py tests\trading`
+  -> passed.
+- Latest no-order readiness check:
+  `.\venv\Scripts\python.exe scripts\check_rebalance_readiness.py --dry-run-json data\dry_run_rebalance_latest.json --expected-date 2026-05-28`
+  -> `preflight_status=clean`, `execution_ready=true`.
+
+## 2026-05-28 Risk exits bypass daily sell cap
+
+### Completed
+
+- Confirmed the root cause: `SAFETY.max_daily_sells=10` was enforced by
+  `TradingEngine.sell()` for every sell path, so stop-loss and staged exit
+  monitor sells could be blocked after the daily sell counter reached the
+  rebalance/manual safety limit.
+- Kept normal/manual/rebalance `sell()` calls under the daily sell cap.
+- Added an explicit `enforce_daily_limit` switch to `TradingEngine.sell()` and
+  used `False` only for risk-exit paths:
+  - legacy stop-loss monitor;
+  - legacy trailing-stop monitor;
+  - staged full stop;
+  - staged first profit take;
+  - staged post-profit trailing bucket;
+  - staged breakeven bucket.
+- Rebalance dry-run preflight still blocks rebalance plans whose `sell_count`
+  exceeds `SAFETY.max_daily_sells`, so PAPER safety/readiness gates remain in
+  place.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py -q`
+  failed with `RuntimeError: 일일 매도 한도 초과: 1/1` in both
+  `check_stop_loss()` and `check_exit_rules()`.
+- GREEN: `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py -q`
+  -> `30 passed`.
+- Related trading tests:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py tests\trading\test_rebalancer.py tests\trading\test_scheduler.py -q`
+  -> `69 passed`.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall src\trading tests\trading`
+  -> passed.
+
+## 2026-05-26 Remove minimum holding sell gate
+
+### Completed
+
+- Removed the rebalance sell block that required an exit-state `entry_date`.
+- Removed the rebalance sell block that required `min_holding_trading_days`.
+- Set `REBALANCE.min_holding_trading_days` to `0` so current defaults match the
+  new behavior.
+- Aligned the backtest engine and Adaptive Alpha wrapper so historical tests no
+  longer assume a minimum holding-day gate.
+- Kept stop-loss, trailing, breakeven, stop-cooldown re-entry protection, daily
+  sell limits, and PAPER dry-run/preflight gates intact.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py tests\backtest\test_backtest_engine.py tests\strategies\test_adaptive_alpha.py tests\test_strategy_defaults.py`
+  -> `67 passed`.
+- `.\venv\Scripts\python.exe -m compileall config.py src scripts tests` ->
+  passed.
+- `git diff --check -- ...` -> passed.
+
+## 2026-05-22 Bond-yield risk overlay
+
+### Completed
+
+- Added a bond-yield risk overlay that reads `KR10Y` and `US10Y` from
+  `market_index_prices`.
+- Applied the overlay to both dry-run rebalance reports and the scheduled
+  rebalance path by combining it with the existing US-market index multiplier.
+- Extended market index sync so `KR10Y` can come from pykrx OTC treasury
+  yields and `US10Y` can come from Yahoo `^TNX`, with US yield scale
+  normalization.
+- Dry-run JSON now includes `bond_yield_risk` and
+  `combined_buy_budget_multiplier`.
+
+### Rules
+
+- +15bp or more in one 10Y yield: reduce buys to `0.85x`.
+- +30bp in one 10Y yield, or both KR/US 10Y yields +15bp or more: reduce buys
+  to `0.70x`.
+- -15bp or more in one 10Y yield: increase buys to `1.10x`.
+- -30bp in one 10Y yield, or both KR/US 10Y yields -15bp or more: increase
+  buys to `1.20x`.
+- Mixed one-up/one-down bond signals stay neutral. Missing yield history stays
+  neutral.
+
+### Verification
+
+- `.\venv\Scripts\python.exe -m pytest tests\data\test_sync_market_indices.py tests\trading\test_us_market_risk.py tests\trading\test_bond_yield_risk.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py`
+  -> `44 passed`.
+- `.\venv\Scripts\python.exe -m compileall src scripts tests` -> passed.
+
 ## 2026-05-14 Hankyung consensus research pipeline
 
 ### Completed
@@ -629,8 +975,50 @@
 
 ### Notes
 
-- Use `--top-n 10` for execution-prep runs unless `SAFETY.max_daily_buys` is intentionally changed and reverified.
+- `scripts/daily_paper_run.py` now defaults `--top-n` to `PORTFOLIO.n_holdings` (`30`) so the daily PAPER target list matches the adopted portfolio size.
+- `SAFETY.max_daily_buys` remains `10`; this keeps daily execution throttled while allowing the 30-name target list to be filled over multiple sessions.
 - KIS quote retry rows with `status=success` are recovered current-price lookup failures, not failed orders.
+
+## 2026-05-22 PAPER Daily Buy Limit Adjustment
+
+### Completed
+
+- Raised `SAFETY.max_daily_buys` from `10` to `20`.
+- Reason: the 2026-05-22 dry-run already targets `30` holdings and produced `buy_count=20`, but readiness blocked execution with `daily buy limit would be exceeded (20/10)`.
+- `SAFETY.max_daily_sells` remains `10`; sell-side execution throttling is unchanged.
+- PAPER confirmation, dry-run preflight, quote failure checks, stale-report checks, and market-time readiness remain unchanged.
+
+### Verification
+
+- RED: `.\venv\Scripts\python.exe -m pytest tests\test_strategy_defaults.py tests\trading\test_rebalancer.py::test_execute_rebalance_allows_twenty_daily_buys tests\trading\test_rebalancer.py::test_execute_rebalance_blocks_when_dry_run_orders_exceed_daily_buy_limit -q` -> failed because `SAFETY.max_daily_buys` was still `10` and preflight blocked `(20/10)`.
+- Targeted tests: `.\venv\Scripts\python.exe -m pytest tests\test_strategy_defaults.py tests\trading\test_rebalancer.py tests\trading\test_execute_rebalance_from_dry_run.py tests\trading\test_check_rebalance_readiness.py -q` -> 40 passed.
+- Readiness recheck on the current 2026-05-22 dry-run: `.\venv\Scripts\python.exe scripts\check_rebalance_readiness.py --dry-run-json data\dry_run_rebalance_latest.json --expected-date 2026-05-22` -> `preflight_status=clean`, `execution_ready=true`.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall config.py src\trading\rebalancer.py scripts\check_rebalance_readiness.py tests\test_strategy_defaults.py tests\trading\test_rebalancer.py tests\trading\test_check_rebalance_readiness.py` -> passed.
+
+## 2026-05-21 US Market Risk Buy Adjustment
+
+### Completed
+
+- Added a shared US-market buy adjustment layer for PAPER rebalance planning.
+- US index data support now covers `NASDAQ`, `SP500`, and `DOW` via the market-index sync path.
+- The adjustment is based on the latest completed US index session before the Korean rebalance date:
+  - severe drop in any tracked US index (`<= -3.0%`) -> `0.60x` buy budget and `40%` cash target note;
+  - moderate drop in two or more indexes (`<= -1.5%`) -> `0.70x`;
+  - moderate drop in one index -> `0.80x`;
+  - rally in two or more indexes (`>= +1.5%`) -> `1.20x`;
+  - broad positive session in two or more indexes (`>= +1.0%`) -> `1.10x`;
+  - missing US index history -> neutral `1.00x`, reported as `missing`.
+- `scripts/dry_run_rebalance.py` writes `us_market_risk` evidence to JSON and Markdown, and scales target weights before buy sizing.
+- `src.trading.scheduler._rebalance_job` uses the same shared adjustment before PAPER buy order planning.
+- Total planned buy value is bounded by the available buy budget, so risk-on scaling cannot plan more cash usage than the available budget allows.
+- Existing PAPER confirmation, dry-run preflight, quote checks, and `SAFETY.max_daily_buys=10` remain unchanged.
+
+### Verification
+
+- TDD RED: targeted US-market adjustment tests initially failed with `ModuleNotFoundError: No module named 'src.trading.us_market_risk'`.
+- Targeted GREEN: `.\venv\Scripts\python.exe -m pytest tests\trading\test_us_market_risk.py tests\trading\test_rebalancer.py::test_buy_budget_multiplier_scales_orders_without_exceeding_budget tests\trading\test_dry_run_rebalance.py::test_run_scales_buy_weights_after_positive_us_market_session tests\trading\test_scheduler.py::test_rebalance_job_applies_us_market_buy_budget_multiplier tests\data\test_sync_market_indices.py::test_run_upserts_fake_market_index_rows -q` -> 7 passed.
+- Related trading/data suite: `.\venv\Scripts\python.exe -m pytest tests\trading\test_us_market_risk.py tests\trading\test_rebalancer.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py tests\data\test_sync_market_indices.py -q` -> 57 passed.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall src\trading scripts\dry_run_rebalance.py scripts\sync_market_indices.py tests\trading tests\data\test_sync_market_indices.py` -> passed.
 
 ## 2026-05-09 Rebalance dry-run report automation
 
@@ -3493,6 +3881,204 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 
 - On the next weekday market window, use the bundle archive after prepare/readiness/execution review so the full operation-day evidence is preserved under `logs/rebalance_run_YYYY-MM-DD/`.
 
+## 2026-05-19 Exit/Rebalance Strategy Implementation Evidence
+
+### Completed
+
+- Updated daily loss-limit behavior:
+  - `-3%` daily loss now blocks new buys only;
+  - sell orders, staged exits, stop exits, and rebalance risk-reduction sells remain active;
+  - daily loss-limit lookup failures no longer block staged exit checks; the cycle continues with buys suppressed;
+  - scheduled rebalance runs sell-only when the daily loss limit is active;
+  - sell-only rebalance ignores buy-side dry-run quote failures and buy-count preflight limits while keeping stale-report and sell-limit gates.
+- Implemented staged exits:
+  - pre-profit full stop at `-7%` after the live PAPER exit check showed `-5%` was too tight for several fresh positions;
+  - first profit take at `+20%` selling `50%`;
+  - post-profit trailing bucket at existing `-10%`;
+  - post-profit breakeven bucket at entry price.
+- Implemented rebalance churn controls:
+  - top `20` buy list;
+  - top `30` sell buffer;
+  - `2` trading-day minimum holding period for rebalance exits.
+- Implemented score-weighted allocation:
+  - `3%` minimum target weight;
+  - `15%` maximum target weight;
+  - residual cash allowed when caps bind.
+- Added PAPER exit-state persistence and stale-state protections:
+  - state survives transient missing prices for positive-quantity holdings;
+  - state clears after full exits or completed staged bucket exits;
+  - stale state resets for rebuilt positions.
+- Aligned operational rebalance paths with the tested strategy:
+  - scheduled PAPER rebalance now uses the staged exit monitor before rebalancing;
+  - scheduled and dry-run rebalances both use top `30` sell eligibility, score-weighted target sizing, and the `2` trading-day rebalance sell gate;
+  - holdings with no local exit-state entry date are blocked from rebalance sells until state evidence exists.
+
+### Verification
+
+- Trading/backtest tests: `.\venv\Scripts\python.exe -m pytest tests\trading tests\backtest -q` -> 241 passed.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall src scripts tests` -> passed.
+- Backtest matrix: `.\venv\Scripts\python.exe scripts\run_backtest_matrix.py --top-ns 20 --rebalance-frequencies weekly --cost-scenarios custom --stop-loss-pct -0.05 --trailing-stop-pct -0.10 --profit-take-pct 0.20 --profit-take-sell-fraction 0.50 --sell-rank-buffer 30 --min-holding-trading-days 2 --weighting score_weighted --output-csv data\backtest_exit_rebalance_strategy_2026-05-19.csv --output-md data\backtest_exit_rebalance_strategy_2026-05-19.md` -> final equity `113,428,859.46`, total return `13.43%`, max drawdown `-20.28%`, Sharpe `0.4742`, win rate `44.84%`, average holding days `33.65`, trade count `831`.
+- No-order dry-run: `.\venv\Scripts\python.exe scripts\dry_run_rebalance.py --as-of-date 2026-05-19 --top-n 20 --output-json data\dry_run_rebalance_latest.json --output-md data\dry_run_rebalance_latest.md --quote-retries 4 --quote-delay-sec 0.5` -> `sell_count=0`, `buy_count=0`, `price_lookup_failed_count=0`, `price_fallback_count=0`, `price_retry_success_count=7`, `price_retry_failed_count=0`, `orders_submitted=0` by dry-run design.
+- Live PAPER exit monitor check: `.\venv\Scripts\python.exe -c "from src.trading.engine import TradingEngine; from src.trading.kis_client import KisClient; from src.trading.scheduler import _stop_loss_job; _stop_loss_job(TradingEngine(KisClient()))"` -> daily loss limit `-4.29%` blocked new buys, exits stayed active, and PAPER market sell orders were accepted for `000270`, `005850`, `038500`, `375500`, `383220`.
+- Stop-loss threshold update evidence: the live PAPER exit check sold `000270` at `-7.87%`, `005850` at `-6.13%`, `038500` at `-11.98%`, `375500` at `-5.36%`, and `383220` at `-5.92%`; to avoid the near-`-5%` exits being too tight, the default full-stop threshold is now `-7%`.
+- Readiness check: `.\venv\Scripts\python.exe scripts\check_rebalance_readiness.py --dry-run-json data\dry_run_rebalance_latest.json --expected-date 2026-05-19` -> `preflight_status=clean`, `market_time_status=blocked`, `execution_ready=false`.
+
+### Notes
+
+- Initial dry-run attempt failed under sandboxed network/socket permissions; rerun with approved network access succeeded.
+- The dry-run reported cash `-708,536` KRW, so weighted buy budgets were negative and all incremental buys were skipped; no rebalance orders were planned.
+- Pytest emitted a non-failing Windows temp cleanup `PermissionError` after several successful runs.
+
+## 2026-05-19 30-Stock Risk Overlay Backtest Evidence
+
+### Completed
+
+- Expanded the backtest/default portfolio target from `20` to `30` holdings.
+- Kept the full stop at `-7%` and added a `3` calendar-day same-ticker cooldown after full stop exits.
+- Added ATR volatility stop support to the backtest path:
+  - ATR window `14`;
+  - ATR multiplier `2.5`;
+  - the pre-profit position exits when either `-7%` full stop or ATR stop is hit first.
+- Added market-risk overlay support to the backtest path:
+  - KOSPI/KOSDAQ RSI(14) >= `75` raises target cash;
+  - one overheated market -> `15%` target cash;
+  - both overheated markets -> `25%` target cash;
+  - prior Nasdaq drop <= `-2.0%` -> `20%` target cash;
+  - prior Nasdaq drop <= `-3.5%` -> `35%` target cash;
+  - rebalance-day exposure is reduced pro-rata when cash is below the target.
+- Added `market_index_prices` storage and `scripts/sync_market_indices.py` for real KOSPI/KOSDAQ/NASDAQ index data.
+- Synced real historical data:
+  - `daily_prices`: `698,180` rows, `2020-01-02` to `2026-05-19`, `627` tickers;
+  - `fundamentals`: `693,599` rows, `2020-01-02` to `2026-05-19`, `625` tickers;
+  - `market_index_prices`: `4,732` rows, `2020-01-02` to `2026-05-19`, `3` symbols;
+  - `quality_metrics`: `3,919` rows, published `2024-05-07` to `2026-05-08`, `507` tickers.
+
+### Verification
+
+- TDD red check: `.\venv\Scripts\python.exe -m pytest tests\backtest\test_backtest_engine.py -q` failed before market-index repository/engine support existed.
+- Targeted tests and repository/script coverage: `.\venv\Scripts\python.exe -m pytest tests\backtest\test_backtest_engine.py tests\backtest\test_run_script.py tests\backtest\test_run_matrix_script.py tests\data\test_repositories.py tests\data\test_sync_market_indices.py -q` -> 73 passed.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall src scripts tests` -> passed.
+- Market index sync: `.\venv\Scripts\python.exe scripts\sync_market_indices.py --start-date 2020-01-01 --end-date 2026-05-19` -> `row_count=4732`.
+- Phase 1 price/fundamental sync:
+  - 2023 -> `price_count=111,815`, `fundamental_count=111,244`;
+  - 2022 -> `price_count=108,320`, `fundamental_count=107,828`;
+  - 2021 -> `price_count=105,737`, `fundamental_count=105,206`;
+  - 2020 -> `price_count=101,481`, `fundamental_count=100,555`.
+- Official quality-gated backtest window is `2024-05-16` to `2026-05-19`, because earlier dates have `quality_coverage_critical` and the buy filter correctly skips buy candidates instead of faking missing DART data.
+- New overlay result: `.\venv\Scripts\python.exe scripts\run_backtest_matrix.py --start-date 2024-05-16 --end-date 2026-05-19 --top-ns 30 --rebalance-frequencies weekly --cost-scenarios custom ... --enable-atr-stop --enable-market-risk-overlay` -> final equity `175,646,610.74`, total return `75.65%`, CAGR `32.38%`, max drawdown `-13.13%`, Sharpe `1.5220`, win rate `52.93%`, average holding days `28.88`, trade count `1,963`.
+- Baseline comparison without ATR and market overlay: final equity `188,728,144.81`, total return `88.73%`, CAGR `37.20%`, max drawdown `-13.67%`, Sharpe `1.6140`, win rate `53.45%`, trade count `1,916`.
+- Cost stress with the new overlay:
+  - custom cost -> total return `75.65%`, max drawdown `-13.13%`, Sharpe `1.5220`;
+  - slippage20 -> total return `65.67%`, max drawdown `-15.80%`, Sharpe `1.3697`;
+  - slippage30 -> total return `58.21%`, max drawdown `-18.05%`, Sharpe `1.2521`.
+- New overlay trade reasons:
+  - buys `854`, sells `1,109`;
+  - `stop_loss` `230`, `stop_loss_close_fallback` `2`;
+  - `atr_stop` `39`;
+  - `profit_take_20` `151`;
+  - `post_profit_trailing_stop` `100`, `post_profit_trailing_stop_close_fallback` `4`;
+  - `post_profit_breakeven_stop` `23`;
+  - `market_risk_reduce` `29`, all on `2025-10-13`;
+  - `rebalance` `531`.
+- Worst drawdown path for the new overlay: peak `102,451,275.36` on `2024-07-16`, trough `88,999,662.37` on `2025-04-07`, drawdown `-13.13%`.
+
+### Notes
+
+- The market overlay reduced MDD by `0.54pp` versus the no-overlay/no-ATR comparison, but it also reduced total return by `13.08pp`; this is a defense trade-off, not a free improvement.
+- `sell_rank_buffer=30` is now equal to `n_holdings=30`, so there is no extra rank buffer beyond the target list. A follow-up test should compare `sell_rank_buffer=40` or `45` for lower turnover.
+- Live PAPER stop/rebalance paths are not yet extended with ATR stop or index-risk overlay; this change is currently proven in the backtest/reporting path.
+
+## 2026-05-19 Adaptive Alpha Experimental Strategy
+
+### Completed
+
+- Added an isolated experimental strategy without changing existing backtest, trading, scheduler, or config behavior.
+- New files:
+  - `src/strategies/__init__.py`;
+  - `src/strategies/adaptive_alpha.py`;
+  - `scripts/run_adaptive_alpha_backtest.py`;
+  - `scripts/run_adaptive_alpha_matrix.py`;
+  - `tests/strategies/test_adaptive_alpha.py`;
+  - `tests/strategies/test_run_adaptive_alpha_matrix.py`.
+- Strategy design:
+  - uses the existing factor engine output as the base candidate list;
+  - re-ranks candidates with recent price trend quality:
+    - latest close above 20-day moving average;
+    - latest close above 60-day moving average;
+    - 20-day moving average above 60-day moving average;
+    - 20-day moving average rising;
+    - 20-day return positive;
+  - penalizes high recent daily volatility;
+  - keeps `30` holdings but uses a wider sell rank buffer of `40`;
+  - uses score-weighted allocation with `3%` minimum and `12%` maximum position weight;
+  - keeps `-7%` full stop and `3` day stop cooldown;
+  - uses tighter `-8%` post-profit trailing stop;
+  - uses ATR(14) x `2.2` stop;
+  - first profit-take threshold is `+16%`, selling `45%`;
+  - uses stricter market-risk overlay thresholds:
+    - KOSPI/KOSDAQ RSI threshold `72`;
+    - one overheated market -> `18%` cash;
+    - both overheated markets -> `30%` cash;
+    - prior Nasdaq drop <= `-1.8%` -> `22%` cash;
+    - prior Nasdaq drop <= `-3.2%` -> `38%` cash.
+
+### Verification
+
+- RED test: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py -q` -> failed with `ModuleNotFoundError: No module named 'src.strategies'`.
+- GREEN test: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py -q` -> 2 passed.
+- Related test set: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py tests\backtest\test_backtest_engine.py tests\backtest\test_run_matrix_script.py tests\data\test_sync_market_indices.py -q` -> 36 passed.
+- Matrix/preload regression tests: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py tests\strategies\test_run_adaptive_alpha_matrix.py -q` -> 5 passed.
+- Broader related test set: `.\venv\Scripts\python.exe -m pytest tests\strategies\test_adaptive_alpha.py tests\strategies\test_run_adaptive_alpha_matrix.py tests\backtest\test_backtest_engine.py tests\data\test_sync_market_indices.py -q` -> 35 passed, with a non-fatal Windows pytest temp cleanup `PermissionError` after pass reporting.
+- Syntax check: `.\venv\Scripts\python.exe -m compileall src scripts tests` -> passed.
+- First full run hit the 15-minute limit because the wrapper was calling the slow factor scorer. The strategy now reuses the existing `_make_fast_score_func` inside the isolated wrapper; existing engine behavior is unchanged.
+- The strategy now preloads Adaptive Alpha price history once for the tested date range instead of re-querying each rebalance date, which made the parameter matrix practical while leaving the base backtest engine unchanged.
+- Adaptive Alpha actual-data backtest, quality-gated `2024-05-16` to `2026-05-19`:
+  - final equity `189,861,769.46`;
+  - total return `89.86%`;
+  - CAGR `37.61%`;
+  - max drawdown `-13.44%`;
+  - Sharpe `1.7533`;
+  - win rate `59.33%`;
+  - average holding days `33.93`;
+  - trade count `2,152`.
+- Adaptive Alpha sell reasons:
+  - `atr_stop`: `82`;
+  - `market_risk_reduce`: `190`;
+  - `post_profit_breakeven_stop`: `24`;
+  - `post_profit_trailing_stop`: `158`;
+  - `post_profit_trailing_stop_close_fallback`: `4`;
+  - `profit_take_20`: `204`;
+  - `rebalance`: `464`;
+  - `stop_loss`: `210`;
+  - `stop_loss_close_fallback`: `4`.
+- Cost stress:
+  - slippage20 -> final equity `181,526,541.37`, total return `81.53%`, CAGR `34.57%`, max drawdown `-15.44%`, Sharpe `1.6310`;
+  - slippage30 -> final equity `173,928,840.00`, total return `73.93%`, CAGR `31.73%`, max drawdown `-16.94%`, Sharpe `1.5181`.
+- Parameter matrix:
+  - 8-combo run (`sell_rank_buffer` 40/45 x ATR 2.0/2.2 x profit take 16%/18%) exceeded the 20-minute command limit;
+  - 4-combo run fixing ATR at `2.2` completed and wrote `data/adaptive_alpha_param_matrix_2026-05-19.csv` and `data/adaptive_alpha_param_matrix_2026-05-19.md`;
+  - best combo by Sharpe, return, and lowest drawdown was `sell_rank_buffer=40`, `atr_multiplier=2.2`, `profit_take_pct=0.16`;
+  - best combo result: final equity `194,706,952.45`, total return `94.71%`, CAGR `39.35%`, max drawdown `-12.29%`, Sharpe `1.8409`, win rate `58.16%`, average holding days `30.12`, trade count `2,166`;
+  - other tested combos: buffer 40/profit 18% -> return `89.46%`, MDD `-13.65%`, Sharpe `1.7521`; buffer 45/profit 16% -> return `92.06%`, MDD `-12.43%`, Sharpe `1.8053`; buffer 45/profit 18% -> return `88.53%`, MDD `-13.44%`, Sharpe `1.7415`.
+- Best-combo cost stress:
+  - slippage20 -> final equity `182,118,907.98`, total return `82.12%`, CAGR `34.79%`, max drawdown `-15.31%`, Sharpe `1.6572`;
+  - slippage30 -> final equity `175,346,153.69`, total return `75.35%`, CAGR `32.27%`, max drawdown `-16.30%`, Sharpe `1.5537`.
+
+### Comparison
+
+- Prior no-overlay/no-ATR baseline on the same quality-gated window: total return `88.73%`, max drawdown `-13.67%`, Sharpe `1.6140`.
+- Prior risk-overlay strategy on the same quality-gated window: total return `75.65%`, max drawdown `-13.13%`, Sharpe `1.5220`.
+- Initial Adaptive Alpha default: total return `89.86%`, max drawdown `-13.44%`, Sharpe `1.7533`.
+- Tuned Adaptive Alpha default improved versus initial Adaptive Alpha by `+4.85pp` total return, `+1.15pp` max drawdown, and `+0.0876` Sharpe.
+- Tuned Adaptive Alpha improved return and Sharpe versus both prior references while also improving drawdown versus the prior no-overlay/no-ATR baseline and the initial Adaptive Alpha run.
+- Adopted exit/rebalance defaults after user approval:
+  - `EXIT_RULES.trailing_stop_pct=-0.08`;
+  - `EXIT_RULES.profit_take_pct=0.16`;
+  - `EXIT_RULES.profit_take_sell_fraction=0.45`;
+  - `EXIT_RULES.atr_multiplier=2.2`;
+  - `REBALANCE.sell_rank_buffer=40`.
+- This adoption changes shared defaults used by the normal backtest scripts and PAPER exit monitor configuration, but it does not add a new order execution path or bypass dry-run/readiness gates.
+
 ## 2026-05-09 Telegram notification smoke test
 
 ### Completed
@@ -3516,3 +4102,166 @@ Look-ahead bias는 백테스트가 그 시점에는 아직 알 수 없던 정보
 ### Next
 
 - Fix Telegram chat permission before Monday: start a private chat with the bot or add the bot to the target group/channel, then verify `TELEGRAM_CHAT_ID` points to that chat and rerun `scripts\smoke_test_telegram.py`.
+
+## 2026-06-12 Inverse ETF hedge overlay
+
+### Completed
+
+- Added an inverse ETF hedge layer that only trades configured `INVERSE_ETF_ALLOWED_TICKERS`.
+- 1x and 2x inverse ETFs are both supported; 2x tickers must also be listed in `INVERSE_ETF_LEVERAGED_TICKERS`.
+- Default caps are conservative: total inverse ETF weight `15%`, 1x cap `10%`, 2x cap `5%`, severe 2x target `3%`.
+- Buy evidence comes from market drops, severe overbought RSI, or existing macro risk-off signals.
+- Sell evidence covers risk cleared, stop loss, take profit, max holding days, and target trims.
+- Dry-run JSON/Markdown reports now include an `inverse_etf_hedge` section with selected tickers, target weights, evidence, skipped items, and generated orders.
+- Scheduler rebalance order calculation now includes the same inverse ETF hedge orders so dry-run preflight order matching remains intact.
+- Backtest engine supports `enable_inverse_etf_hedge`, `inverse_etf_allowed_tickers`, and `inverse_etf_leveraged_tickers`.
+
+### Safety Notes
+
+- No LIVE auto-execution path was added.
+- New inverse ETF orders still go through the existing dry-run report, stale report, price lookup, order match, daily order limit, and readiness gates.
+- With an empty inverse ETF whitelist, no inverse ETF orders are generated.
+
+## 2026-06-12 Review-fix verification evidence
+
+### Indicator threshold fixes validated on real FRED data (2020-01 ~ 2026-05)
+
+- CPI rule before fix (`delta >= 0.3` index points) fired 65/75 months (87%); CORE_CPI 69/75 (92%).
+  In 2024+ it fired 89%/93% of months, i.e. a near-permanent risk_off drag.
+- CPI rule after fix (m/m percent change >= 0.4%) fires 27/75 (36%) overall, 6/28 (21%) in 2024+;
+  CORE_CPI 18/75 (24%) overall, 1/28 (4%) in 2024+ - only genuinely hot months.
+- PAYEMS rule before fix (`delta <= -100_000` in thousands units = -100M jobs) fired 0 times,
+  including the COVID month of -20,469k. After fix (`<= -100`) it fires 5 times.
+
+### Market index data gap found and backfilled
+
+- `market_index_prices` had only KOSPI/KOSDAQ/NASDAQ (through 2026-05-18/19).
+  KR10Y/US10Y/SP500/DOW were entirely missing, so the bond-yield overlay had been
+  silently inactive. Backfilled all 7 symbols 2020-01-02 ~ 2026-06-11/12 (8,063 rows)
+  via `scripts/sync_market_indices.py`.
+
+### Backtest: macro overlay off vs on (2020-07-01 ~ 2026-05-18, top 20, weekly, custom costs)
+
+| metric | overlay off | overlay on |
+| --- | --- | --- |
+| total_return | +83.42% | +81.75% |
+| cagr | 10.86% | 10.69% |
+| max_drawdown | -16.08% | -15.58% |
+| sharpe_ratio | 1.1094 | 1.1854 |
+| win_rate | 61.59% | 60.74% |
+| trade_count | 898 | 889 |
+
+- Reports: `data/backtest_verify_macro_off.{csv,md}`, `data/backtest_verify_macro_on2.{csv,md}`.
+- Reading: the overlay gives up ~1.7%p of total return for a -0.5%p smaller drawdown and a
+  +6.9% higher Sharpe - the intended insurance trade-off, no longer a permanent drag.
+- Note: `macro_indicator_releases` was empty during these runs (FRED_API_KEY not set), so the
+  comparison measures the US-market + bond-yield overlay parts only.
+
+### Remaining setup before the macro indicator overlay is live
+
+- Get a free FRED API key (https://fred.stlouisfed.org/docs/api/api_key.html) and set
+  `FRED_API_KEY` in `.env`, then run
+  `python scripts/sync_macro_indicators.py --start-date 2020-01-01 --end-date <today>`
+  and confirm `release_date` values differ per period (vintage dates, not the sync date).
+- Set `INVERSE_ETF_ALLOWED_TICKERS` (and `INVERSE_ETF_LEVERAGED_TICKERS`) to enable the hedge.
+- Schedule `scripts/sync_market_indices.py` daily so index/bond inputs stay current;
+  the rebalance job now warns when macro inputs are missing.
+
+## 2026-06-12 Inverse ETF ticker setup + full-data verification
+
+### Configuration
+
+- `.env`: `INVERSE_ETF_ALLOWED_TICKERS=114800,252670` (KODEX inverse 1x / KODEX 200 futures inverse 2X,
+  both verified live via pykrx), `INVERSE_ETF_LEVERAGED_TICKERS=252670`.
+- `INVERSE_ETF_HEDGE_ENABLED=false` for now - backtest evidence below shows the default trigger set
+  destroys value; flip to true only after trigger tuning.
+- `.env.example` documents `FRED_API_KEY` and the inverse ETF keys.
+- Backfilled 114800/252670 daily prices 2020-01-02 ~ 2026-06-12 (1,581 rows each) so backtests can
+  trade the hedge.
+
+### FRED vintage fix verified with a real API key (382 rows, 2020-01 ~ 2026-06)
+
+- 0 rows have release_date equal to the sync day; 225 distinct release dates.
+- CPI 2026-05 -> released 2026-06-10; PAYEMS 2026-05 -> released 2026-06-05 (matches the real
+  BLS calendar); CPI publication lag distribution 37-44 days.
+- Second sync run kept row_count at 382 (idempotent; the old code would have duplicated rows daily).
+- Live dry-run with all three sources active: `missing_sources=[]`,
+  CPI +0.47% m/m flagged risk_off (cash 20%) while the US rally gave risk_on x1.2,
+  combining to multiplier 1.02 - the composite works as designed.
+
+### Backtest comparison, full inputs (2020-07-01 ~ 2026-05-18, top 20, weekly, custom costs)
+
+| scenario | total_return | cagr | mdd | sharpe | trades |
+| --- | --- | --- | --- | --- | --- |
+| overlay off | +83.42% | 10.86% | -16.08% | 1.1094 | 898 |
+| overlay on (no indicators) | +81.75% | 10.69% | -15.58% | 1.1854 | 889 |
+| overlay on (with indicators) | +77.06% | 10.20% | -15.38% | 1.1671 | 864 |
+| overlay + inverse hedge | +65.95% | 8.99% | -15.23% | 1.0475 | 1,648 |
+
+- Overlay: gives up return for smaller drawdowns and a better Sharpe - a defensible insurance trade.
+- Hedge with default triggers: -11.1%p return vs overlay-only for just -0.15%p MDD; direct hedge
+  trade P&L was -6.98M KRW over 245 entries. 59% of entries came from macro risk_off alone and
+  87% of exits were "risk_cleared" whipsaws. Keep disabled until triggers are tuned, e.g.:
+  (a) drop macro risk_off as a standalone entry trigger (require market-drop or RSI confluence),
+  (b) add entry/exit hysteresis (signal must persist 2 consecutive days),
+  (c) enter only on severe signals.
+
+### Bug found during verification and fixed
+
+- Backtest: on non-rebalance days `target_tickers = list(positions)` included hedge positions, so a
+  same-day hedge sell could be re-bought by the generic buy loop at full equal weight
+  (reason "rebalance"). Hedge tickers are now skipped in the generic buy loop.
+- Tests no longer depend on the runner's `.env`: inverse hedge test configs pass `enabled=True`
+  explicitly and the macro sync test passes `--fred-api-key ""`.
+
+## 2026-06-13 Strategy optimization sweep (17 backtests) and data-coverage discovery
+
+### Critical discovery: all prior backtests effectively traded 2024-05+ only
+
+- `quality_metrics` coverage starts at fiscal 2024 (published 2024-05-07+). For any earlier
+  as-of date the buy filter hits `quality_coverage_critical` and skips every buy.
+- Confirmed empirically: a 2024-01~2026-05 window run produced *identical* final equity to the
+  "2020-07~2026-05" runs. All full-window CAGR/Sharpe figures recorded before this date understate
+  the true annualized performance (e.g., top15 weekly is CAGR 31.3%, Sharpe 2.01 over the real
+  tradeable window) and none of them include the 2022 bear market.
+
+### Sweep results (effective window 2024-05~2026-05, custom costs, score_weighted unless noted)
+
+Concentration x frequency (Sharpe / MDD / total return):
+- weekly top10 1.164 / -15.27% / +98.3%; top15 1.267 / -15.34% / +90.9%;
+  top20 1.167 / -15.38% / +77.1%; top30 1.242 / -12.59% / +83.7%
+- monthly top15/20/30 all violate the -18% MDD constraint (-18.3% ~ -19.1%)
+
+Exit-rule variants on top15 weekly (baseline: ATR 2.2x + stop -7% + profit take +16%/45% + cooldown 3):
+- Baseline Sharpe 1.267 beat ALL variants: ATR off 1.159, ATR 3.0x 1.166, ATR 1.8x 1.207,
+  profit-take off 1.157 (+143.6% return but MDD -21.1%), PT +25%/50% 1.113 (MDD -18.7%),
+  PT +30%/33% 1.112 (MDD -19.4%), cooldown5+minhold2 1.196.
+- Equal weighting top15: +101.2% return but Sharpe 1.175 < score_weighted 1.267.
+
+### Decision
+
+- Keep the current configuration unchanged (top30 weekly, score_weighted, current exits).
+  The sweep validates it as locally optimal on every exit dimension tested.
+- top15 weekly is a promising candidate (higher Sharpe and return, worse MDD -15.3% vs -12.6%)
+  but switching concentration is deferred until it can be validated through the 2022 bear.
+- Profit-take removal is documented as a high-return/high-drawdown option (+143.6% / -21.1%),
+  rejected under the MDD <= -18% constraint.
+
+### Quality backfill attempts (for bear-market validation)
+
+- Full-FS sync (system python) died silently twice; root cause includes dart_fss being absent
+  from the system interpreter at first, then environment instability. Use `venv\Scripts\python.exe`.
+- `--single-account-only` via venv works: fiscal 2022 now has 355/739 tickers (1,374 metrics).
+  Note `--only-unsynced` skips tickers that have *any* rows (e.g. 2024) - omit it for backfills.
+- The 2020-2023 full run stalled at the DART corp-list download stage after ~2.5h (likely DART
+  daily-limit throttling after the day's usage) and was abandoned.
+- Next step when quota resets: rerun
+  `venv\Scripts\python.exe scripts\sync_phase1_quality.py --year-from 2020 --year-to 2023 --single-account-only`
+  (expect ~10 min per year when healthy), then re-run the top15-vs-top30 comparison over
+  2020-07~2026-05 and the 2021-07~2023-01 bear window before changing n_holdings.
+
+## 2026-06-15 PAPER trade journal v1
+
+- Added PAPER-only trade journal tables and reporting for future bot orders. The v1 source of truth is KIS filled-order lookup; estimated fills and historical `rebalance_execution_*.json` backfills are intentionally excluded.
+- Rebalance execution and exit-monitor sells now attempt read-only fill lookup after accepted PAPER orders. If fills are delayed or lookup fails after short retries, the run is recorded as `unmatched` and no order is retried.
+- Reports are generated to `data/trade_journal_latest.md`, `data/trade_journal_closed_trades.csv`, and `data/trade_journal_open_positions.csv`, using average-cost realized P&L and numeric review fields rather than narrative loss attribution.

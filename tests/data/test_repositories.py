@@ -1,26 +1,32 @@
-from datetime import date, timedelta
+﻿from datetime import date, timedelta
 
 from sqlalchemy import func, select
 
 from src.data.database import create_tables, get_engine, session_scope
-from src.data.models import DailyPrice, Fundamental, ResearchReportAnalysis, ResearchReportBrief, ResearchReportSignal, Stock
+from src.data.models import (
+    DailyPrice,
+    Fundamental,
+    MarketIndexPrice,
+    ResearchReportAnalysis,
+    ResearchReportBrief,
+    ResearchReportSignal,
+    Stock,
+)
 from src.data.repositories import (
     count_rows,
     get_latest_busanstock_signals,
     get_recent_research_report_scores,
     get_research_report_signals_by_keys,
     get_recent_investor_flow_scores,
-    get_latest_telegram_signals,
     replace_busanstock_signals_for_date,
-    replace_telegram_signals_for_date,
     upsert_daily_prices,
     upsert_fundamentals,
     upsert_investor_flows,
+    upsert_market_index_prices,
     upsert_research_report_analyses,
     upsert_research_report_briefs,
     upsert_research_report_signals,
     upsert_stocks,
-    upsert_telegram_signals,
 )
 
 
@@ -36,11 +42,11 @@ def test_upsert_stocks_inserts_and_updates_existing_ticker():
     with session_scope(engine) as session:
         inserted = upsert_stocks(
             session,
-            [{"ticker": "005930", "name": "삼성전자", "market": "KOSPI"}],
+            [{"ticker": "005930", "name": "Samsung", "market": "KOSPI"}],
         )
         updated = upsert_stocks(
             session,
-            [{"ticker": "005930", "name": "삼성전자우아님", "market": "KOSPI"}],
+            [{"ticker": "005930", "name": "Samsung Updated", "market": "KOSPI"}],
         )
 
     with session_scope(engine) as session:
@@ -49,7 +55,7 @@ def test_upsert_stocks_inserts_and_updates_existing_ticker():
     assert inserted == 1
     assert updated == 1
     assert len(rows) == 1
-    assert rows[0].name == "삼성전자우아님"
+    assert rows[0].name == "Samsung Updated"
 
 
 def test_upsert_daily_prices_uses_ticker_and_date_as_unique_key():
@@ -73,6 +79,29 @@ def test_upsert_daily_prices_uses_ticker_and_date_as_unique_key():
 
     assert len(rows) == 1
     assert rows[0].close == 70600
+
+
+def test_upsert_market_index_prices_uses_symbol_and_date_as_unique_key():
+    engine = make_session()
+    row = {
+        "symbol": "KOSPI",
+        "date": date(2026, 5, 1),
+        "open": 2700,
+        "high": 2720,
+        "low": 2690,
+        "close": 2710,
+        "volume": 1000,
+    }
+
+    with session_scope(engine) as session:
+        upsert_market_index_prices(session, [row])
+        upsert_market_index_prices(session, [{**row, "close": 2715}])
+
+    with session_scope(engine) as session:
+        rows = session.scalars(select(MarketIndexPrice)).all()
+
+    assert len(rows) == 1
+    assert rows[0].close == 2715
 
 
 def test_upsert_daily_prices_batches_large_inputs_under_sqlite_variable_limit():
@@ -166,7 +195,7 @@ def test_count_rows_returns_table_counts():
     engine = make_session()
 
     with session_scope(engine) as session:
-        upsert_stocks(session, [{"ticker": "005930", "name": "삼성전자", "market": "KOSPI"}])
+        upsert_stocks(session, [{"ticker": "005930", "name": "?쇱꽦?꾩옄", "market": "KOSPI"}])
         counts = count_rows(session)
 
     assert counts["stocks"] == 1
@@ -174,75 +203,9 @@ def test_count_rows_returns_table_counts():
     assert counts["fundamentals"] == 0
 
 
-def test_upsert_telegram_signals_saves_and_updates_rows():
+def test_replace_busanstock_signals_saves_and_replaces_rows():
     engine = get_engine("sqlite:///:memory:")
     create_tables(engine)
-
-    with session_scope(engine) as session:
-        inserted = upsert_telegram_signals(
-            session,
-            [
-                {
-                    "message_date": date(2026, 5, 11),
-                    "ticker": "005930",
-                    "signal_type": "positive",
-                    "star_rating": 3,
-                    "raw_score": 3.0,
-                    "target_price": 90000.0,
-                    "message_id": 100,
-                }
-            ],
-        )
-
-    with session_scope(engine) as session:
-        updated = upsert_telegram_signals(
-            session,
-            [
-                {
-                    "message_date": date(2026, 5, 11),
-                    "ticker": "005930",
-                    "signal_type": "positive",
-                    "star_rating": 2,
-                    "raw_score": 2.0,
-                    "target_price": 88000.0,
-                    "message_id": 101,
-                }
-            ],
-        )
-        latest = get_latest_telegram_signals(session, date(2026, 5, 11))
-
-    assert inserted == 1
-    assert updated == 1
-    assert latest == {"005930": 2.0}
-
-
-def test_replace_telegram_signals_for_date_keeps_existing_rows_when_empty():
-    engine = get_engine("sqlite:///:memory:")
-    create_tables(engine)
-
-    with session_scope(engine) as session:
-        upsert_telegram_signals(
-            session,
-            [
-                {
-                    "message_date": date(2026, 5, 11),
-                    "ticker": "005930",
-                    "signal_type": "positive",
-                    "star_rating": 3,
-                    "raw_score": 3.0,
-                    "target_price": 90000.0,
-                    "message_id": 100,
-                }
-            ],
-        )
-        replaced = replace_telegram_signals_for_date(session, date(2026, 5, 11), [])
-        latest = get_latest_telegram_signals(session, date(2026, 5, 11))
-
-    assert replaced == 0
-    assert latest == {"005930": 3.0}
-
-
-def test_replace_busanstock_signals_for_date_saves_and_replaces_rows():
     engine = get_engine("sqlite:///:memory:")
     create_tables(engine)
 
@@ -257,7 +220,7 @@ def test_replace_busanstock_signals_for_date_saves_and_replaces_rows():
                     "signal_type": "buy",
                     "source_section": "stock_snapshot",
                     "raw_score": 0.3,
-                    "detail": "매수 분류",
+                    "detail": "留ㅼ닔 遺꾨쪟",
                 },
                 {
                     "signal_date": date(2026, 5, 11),
@@ -265,7 +228,7 @@ def test_replace_busanstock_signals_for_date_saves_and_replaces_rows():
                     "signal_type": "tp_up",
                     "source_section": "consensus",
                     "raw_score": 0.5,
-                    "detail": "TP 상향",
+                    "detail": "TP ?곹뼢",
                 },
             ],
         )
@@ -279,7 +242,7 @@ def test_replace_busanstock_signals_for_date_saves_and_replaces_rows():
                     "signal_type": "warning",
                     "source_section": "stock_snapshot",
                     "raw_score": -0.7,
-                    "detail": "매도·경고 분류",
+                    "detail": "留ㅻ룄쨌寃쎄퀬 遺꾨쪟",
                 }
             ],
         )
@@ -305,7 +268,7 @@ def test_get_latest_busanstock_signals_does_not_carry_to_later_dates():
                     "signal_type": "buy",
                     "source_section": "stock_snapshot",
                     "raw_score": 0.3,
-                    "detail": "매수 분류",
+                    "detail": "留ㅼ닔 遺꾨쪟",
                 }
             ],
         )
@@ -404,7 +367,7 @@ def test_upsert_research_report_analyses_saves_and_updates_by_signal_id():
         "ticker": "005930",
         "source": "hankyung_consensus",
         "region": "domestic",
-        "broker": "한경 컨센서스",
+        "broker": "?쒓꼍 而⑥꽱?쒖뒪",
         "rating": "Buy",
         "rating_score": 0.6,
         "target_price": 90000.0,
@@ -432,23 +395,23 @@ def test_upsert_research_report_analyses_saves_and_updates_by_signal_id():
             "source_url": signal.source_url,
             "body_text_status": "extracted",
             "body_text_chars": 1200,
-            "summary": "실적 개선과 목표가 상향이 핵심입니다.",
+            "summary": "?ㅼ쟻 媛쒖꽑怨?紐⑺몴媛 ?곹뼢???듭떖?낅땲??",
             "investment_opinion": "positive",
-            "buy_thesis": "매수 근거",
+            "buy_thesis": "留ㅼ닔 洹쇨굅",
             "sell_or_risk_thesis": "",
-            "growth_drivers": "AI 수요",
-            "earnings_drivers": "영업이익 개선",
-            "valuation_view": "업사이드 존재",
-            "target_price_rationale": "목표주가 상향",
-            "risk_factors": "환율",
-            "evidence_terms": "매수, 목표주가, 영업이익",
+            "growth_drivers": "AI ?섏슂",
+            "earnings_drivers": "?곸뾽?댁씡 媛쒖꽑",
+            "valuation_view": "?낆궗?대뱶 議댁옱",
+            "target_price_rationale": "紐⑺몴二쇨? ?곹뼢",
+            "risk_factors": "?섏쑉",
+            "evidence_terms": "留ㅼ닔, 紐⑺몴二쇨?, ?곸뾽?댁씡",
             "analysis_version": "rule-v1",
             "confidence": 0.8,
         }
         inserted = upsert_research_report_analyses(session, [analysis_row])
         updated = upsert_research_report_analyses(
             session,
-            [{**analysis_row, "summary": "업데이트된 요약", "confidence": 0.6}],
+            [{**analysis_row, "summary": "?낅뜲?댄듃???붿빟", "confidence": 0.6}],
         )
 
     with session_scope(engine) as session:
@@ -457,7 +420,7 @@ def test_upsert_research_report_analyses_saves_and_updates_by_signal_id():
     assert inserted == 1
     assert updated == 1
     assert len(rows) == 1
-    assert rows[0].summary == "업데이트된 요약"
+    assert rows[0].summary == "?낅뜲?댄듃???붿빟"
     assert rows[0].confidence == 0.6
 
 

@@ -18,6 +18,7 @@ import scripts.review_rebalance_reports as review_reports
 from src.trading.engine import TradingEngine
 from src.trading.kis_client import KisClient
 from src.trading.rebalancer import RebalanceOrder, execute_rebalance
+from src.trading.trade_journal import record_rebalance_trade_journal
 
 
 CONFIRM_TOKEN = "EXECUTE_PAPER_REBALANCE"
@@ -25,8 +26,10 @@ KST = ZoneInfo("Asia/Seoul")
 MARKET_OPEN = time(9, 0)
 MARKET_CLOSE_GUARD = time(15, 20)
 EngineFactory = Callable[[], Any]
-ExecuteFunction = Callable[..., dict[str, list[str]]]
+ExecuteFunction = Callable[..., dict[str, Any]]
+JournalRecordFunction = Callable[..., dict[str, Any]]
 ReviewFunction = Callable[[argparse.Namespace], int]
+_DEFAULT_JOURNAL_RECORD_FUNC = object()
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -35,10 +38,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--dry-run-json", type=Path, default=REBALANCE.dry_run_preflight_report_path)
     parser.add_argument("--expected-date", type=_parse_date, default=date.today())
+    parser.add_argument("--database-url", default=None)
     parser.add_argument("--confirm", default="")
     parser.add_argument("--execution-report-json", type=Path, default=None)
     parser.add_argument("--force-overwrite-report", action="store_true")
     parser.add_argument("--review-before-execute", action="store_true")
+    parser.add_argument(
+        "--skip-ticker",
+        action="append",
+        default=[],
+        help="Ticker to remove from the dry-run order list before execution. Repeat for partial-run resume.",
+    )
     parser.add_argument(
         "--force-market-closed",
         action="store_true",
@@ -53,6 +63,7 @@ def run(
     engine_factory: EngineFactory | None = None,
     execute_func: ExecuteFunction = execute_rebalance,
     review_func: ReviewFunction = review_reports.run,
+    journal_record_func: JournalRecordFunction | None | object = _DEFAULT_JOURNAL_RECORD_FUNC,
     now: datetime | None = None,
 ) -> int:
     if args.confirm != CONFIRM_TOKEN:
@@ -84,6 +95,11 @@ def run(
         return 1
 
     sells, buys = _orders_from_payload(payload)
+    skip_tickers = {str(ticker) for ticker in args.skip_ticker}
+    if skip_tickers:
+        sells = [order for order in sells if order.ticker not in skip_tickers]
+        buys = [order for order in buys if order.ticker not in skip_tickers]
+        print(f"skipped_tickers={','.join(sorted(skip_tickers))}")
     factory = engine_factory or _default_engine_factory
     engine = factory()
 
@@ -114,6 +130,28 @@ def run(
             result=result,
         )
         print(f"execution_report_json={args.execution_report_json}")
+    if journal_record_func is _DEFAULT_JOURNAL_RECORD_FUNC:
+        journal_record_func = (
+            record_rebalance_trade_journal
+            if execute_func is execute_rebalance
+            else None
+        )
+    if journal_record_func is not None and (result["sold"] or result["bought"]):
+        journal_summary = journal_record_func(
+            engine=engine,
+            trade_date=args.expected_date,
+            dry_run_json=args.dry_run_json,
+            execution_report_json=args.execution_report_json,
+            order_numbers=result.get("order_numbers", {}),
+            successful_tickers={
+                "SELL": [str(ticker) for ticker in result.get("sold", [])],
+                "BUY": [str(ticker) for ticker in result.get("bought", [])],
+            },
+            database_url=args.database_url,
+        )
+        print(f"trade_journal_status={journal_summary.get('status', 'recorded')}")
+        print(f"trade_journal_recorded_count={journal_summary.get('recorded_count', 0)}")
+        print(f"trade_journal_unmatched_count={journal_summary.get('unmatched_count', 0)}")
     return 0 if not result["failed"] else 1
 
 
@@ -154,7 +192,7 @@ def _write_execution_report(
     executed_at: datetime | None,
     planned_sells: list[RebalanceOrder],
     planned_buys: list[RebalanceOrder],
-    result: dict[str, list[str]],
+    result: dict[str, Any],
 ) -> None:
     current = executed_at or datetime.now(KST)
     current = current.astimezone(KST)
@@ -184,7 +222,7 @@ def _compare_planned_and_executed_orders(
     *,
     planned_sells: list[RebalanceOrder],
     planned_buys: list[RebalanceOrder],
-    result: dict[str, list[str]],
+    result: dict[str, Any],
 ) -> dict[str, Any]:
     planned_sell_tickers = [order.ticker for order in planned_sells]
     planned_buy_tickers = [order.ticker for order in planned_buys]

@@ -18,7 +18,6 @@ from src.data.database import create_tables, get_engine, session_scope
 from src.data.models import ResearchReportSignal
 from src.data.repositories import (
     get_latest_busanstock_signals,
-    get_latest_telegram_signals,
     get_recent_investor_flow_scores,
 )
 from src.factors import engine as factor_engine
@@ -76,7 +75,6 @@ def run(args: argparse.Namespace) -> int:
     )
 
     with session_scope(engine) as session:
-        telegram_signals = get_latest_telegram_signals(session, args.as_of_date)
         busanstock_signals = get_latest_busanstock_signals(session, args.as_of_date)
         investor_flow_signals = get_recent_investor_flow_scores(session, args.as_of_date)
         research_report_signals = get_recent_source_research_report_scores(
@@ -91,7 +89,6 @@ def run(args: argparse.Namespace) -> int:
     without_research = factor_engine.calculate_factor_scores_from_df(
         raw,
         as_of_date=args.as_of_date,
-        telegram_signals=telegram_signals,
         busanstock_signals=busanstock_signals,
         investor_flow_signals=investor_flow_signals,
         research_report_signals={},
@@ -99,7 +96,6 @@ def run(args: argparse.Namespace) -> int:
     with_research = factor_engine.calculate_factor_scores_from_df(
         raw,
         as_of_date=args.as_of_date,
-        telegram_signals=telegram_signals,
         busanstock_signals=busanstock_signals,
         investor_flow_signals=investor_flow_signals,
         research_report_signals=research_report_signals,

@@ -1,5 +1,52 @@
 # quntbot Handoff For Agents
 
+## 2026-06-15 cleanup status
+
+- MTProto Telegram stock-signal scoring is removed. Telegram is now used only
+  for Bot API notifications through `src\notify\notifier.py` and
+  `scripts\smoke_test_telegram.py`.
+- The legacy SQLite table `telegram_signals` was archived to
+  `data\legacy_telegram_signals_archive.csv` and
+  `data\legacy_telegram_signals_archive.md`, then dropped from
+  `data\quntbot.db` by `scripts\cleanup_legacy_telegram_signals.py --apply`.
+- The unconnected KWR experiment was removed because it had no runtime or
+  backtest runner entry point outside its own tests.
+- Current factor output uses the 100-point budget fields:
+  `value_score`, `quality_score`, `momentum_score`, `yield_score`,
+  `technical_score`, `auxiliary_score`, and `total_score`.
+
+## Daily PAPER operations
+
+Use the checklist first when preparing an operator-facing command sequence:
+
+```powershell
+.\venv\Scripts\python.exe scripts\print_rebalance_operations_checklist.py --as-of-date 2026-06-15 --top-n 30
+```
+
+Recommended daily command:
+
+```powershell
+.\venv\Scripts\python.exe scripts\daily_paper_run.py --confirm EXECUTE_PAPER_REBALANCE
+```
+
+The daily runner now performs the read-only Hankyung and Mirae research
+pipelines, Phase 1 sync, dry-run prepare/review, readiness, PAPER execution,
+post-review, run-bundle archive, and then the intraday stop-loss/trailing-stop
+monitor. Keep that terminal open after success; closing it stops the intraday
+monitor.
+
+Maintenance:
+- Use `scripts\cleanup_rebalance_checklist_logs.py --keep 20` as a dry-run
+  maintenance check; add `--apply` only when intentionally deleting old logs.
+
+Alternative scheduler mode:
+- `scripts\run_bot.py` is the broader all-day scheduler: pre-market sync,
+  scheduled rebalance, stop monitor, intraday macro dry-run, Busanstock polling,
+  and research-report polling.
+- Do not run `daily_paper_run.py` and `run_bot.py` at the same time on the same
+  trading day. The daily runner intentionally starts only the stop monitor after
+  PAPER execution to avoid registering another daily rebalance job.
+
 ## Agent work continuity dashboard
 
 The local agent work continuity dashboard helps recover context after switching
@@ -210,7 +257,7 @@ config.py                     전역 설정 (dataclass, .env 읽기)
 src/
   data/
     models.py                 SQLAlchemy ORM: Stock, DailyPrice, Fundamental,
-                              TelegramSignal, SyncRun
+                              SyncRun
     database.py               get_engine(), create_tables(), session_scope()
     repositories.py           upsert_*/get_* 함수 (SQLite upsert)
     collectors.py             PykrxMarketDataProvider, sync_phase1_data
@@ -219,8 +266,8 @@ src/
     scoring.py                score_series(), combine_scores(), _zscore()
     engine.py                 calculate_factor_scores(), _load_factor_inputs()
   signals/
-    telegram_parser.py        모닝 브리핑 메시지 파서
-    telegram_reader.py        telethon 채널 폴링 → DB 저장
+    busanstock_parser.py      Busanstock news/consensus parser
+    research_report_reader.py Broker research report metadata/PDF reader
   trading/
     kis_client.py             KIS REST API 래퍼
     engine.py                 TradingEngine (stop-loss, trailing-stop, 잔고조회)
@@ -230,7 +277,7 @@ src/
     engine.py                 run_backtest()
     models.py                 BacktestResult, Trade
   notify/
-    notifier.py               텔레그램 봇 알림 (python-telegram-bot)
+    notifier.py               Telegram Bot API alerts via requests
 scripts/
   run_bot.py                  메인 진입점
   sync_phase1_data.py         수동 데이터 동기화
@@ -261,7 +308,7 @@ scripts/
   compare_rebalance_reports.py 두 dry-run JSON 리포트의 목표/매수 변화 비교
   archive_rebalance_run_bundle.py
                               운영일별 dry-run/readiness/review/checklist 산출물 보관
-  daily_paper_run.py          동기화→드라이런→readiness→PAPER 실행→리뷰→장중 손절/트레일링 감시
+  daily_paper_run.py          research -> sync -> dry-run -> readiness -> PAPER execution -> review -> archive -> intraday stop monitor
 tests/                        pytest, 각 src 모듈 1:1 대응
 ```
 
@@ -274,36 +321,42 @@ tests/                        pytest, 각 src 모듈 1:1 대응
 | `stocks` | `ticker` | name, market, is_active |
 | `daily_prices` | id / (ticker, date) | open/high/low/close/volume/trading_value |
 | `fundamentals` | id / (ticker, date) | bps, per, pbr, eps, div, dps |
-| `telegram_signals` | id / (message_date, ticker) | signal_type, star_rating, raw_score, target_price, message_id |
+| `research_report_signals` | id / (report_date, ticker, source, title) | rating, target_price, raw_score, source_url |
 | `sync_runs` | id | started_at, finished_at, status, universe/price/fundamental_count |
 
 ---
 
 ## 팩터 점수 구조
 
-`FactorScore` 필드 (순서):
+`FactorScore` fields:
 ```python
 ticker, name, market, as_of_date,
-value_score,     # PER·PBR zscore (낮을수록 ↑)
-quality_score,   # ROE = EPS/BPS zscore
-momentum_score,  # 모멘텀 수익률 zscore
-yield_score,     # 배당수익률 zscore
-telegram_score,  # 텔레그램 신호 raw_score zscore
-total_score,     # 가중합 (config.py FACTOR 가중치)
-rank             # 1 = 최고
+value_score,             # up to 25 points
+quality_score,           # up to 25 points
+momentum_score,          # up to 20 points
+yield_score,             # up to 5 points
+technical_score,         # up to 15 points
+auxiliary_score,         # up to 10 points
+busanstock_score,
+investor_flow_score,
+research_report_score,
+total_score,             # 100-point budget total
+rank                     # 1 = best
 ```
 
-`config.py` 기본 가중치:
+`config.py` point budget:
 ```python
-value_weight    = 1.0
-quality_weight  = 1.0
-momentum_weight = 1.0
-yield_weight    = 0.5
-telegram_weight = 0.5
+value_points     = 25
+quality_points   = 25
+momentum_points  = 20
+yield_points     = 5
+technical_points = 15
+auxiliary_points = 10
 ```
 
-NaN 처리: `quality_score`, `yield_score`, `telegram_score`는 데이터 없으면 0.0으로 채움.  
-`value_score`, `momentum_score` 중 하나라도 NaN이면 랭킹에서 제외.
+Missing-data policy is implemented in `src/factors/engine.py`: critical value
+or momentum gaps exclude candidates, while optional auxiliary inputs contribute
+zero when absent.
 
 ---
 
@@ -321,40 +374,12 @@ NaN 처리: `quality_score`, `yield_score`, `telegram_score`는 데이터 없으
 
 ---
 
-## 텔레그램 신호 (src/signals/)
+## Telegram notifications
 
-### 설정 (.env)
-```env
-TELEGRAM_API_ID=12345678        # my.telegram.org 에서 발급 (MTProto)
-TELEGRAM_API_HASH=abcdef...
-TELEGRAM_SIGNAL_CHANNEL=채널명  # username 또는 초대링크
-TELEGRAM_SIGNAL_WEIGHT=0.5      # 팩터 가중치 (선택, 기본 0.5)
-```
-
-### 동작 방식
-- `telethon` MTProto User API로 채널 메시지 폴링 (Bot API 아님, 읽기 전용)
-- 오전 6–9시 15분마다 `fetch_and_store_signals()` 실행
-- 첫 실행 시 전화번호 + OTP 입력 → `data/telegram_signal.session` 생성
-
-### 파서 (`telegram_parser.py`)
-모닝 브리핑 메시지 포맷:
-```
-주식 요약 · 모닝 · YYYY-MM-DD
-━━━━━━━━━━━━━━━
-수혜 종목
-005930 삼성전자 ★★★ - 설명
-주의 종목
-035420 NAVER ★
-━━━━━━━━━━━━━━━
-| 종목 | 커버 | TP | 핵심 1줄 |
-| 005930 삼성전자 | ★★★ | 90000 | AI 서버 |
-```
-
-raw_score 계산:
-- 표 행(TP 있음) → 항상 `수혜`, stars만큼 점수 (1~3)
-- 섹션 내 수혜 라인 → ★ 수만큼 점수 (최소 1.0)
-- 주의 라인 → -1.0
-- 표 행이 섹션보다 우선 (먼저 처리, 섹션은 skip)
+Telegram is notification-only now. The removed MTProto stock-signal scorer no
+longer contributes to factor scores, scheduler polling, or DB schemas. Use
+`scripts\smoke_test_telegram.py` only to verify Bot API alert delivery; it does
+not submit orders.
 
 ---
 
@@ -377,11 +402,6 @@ KRX_PW=...
 # 텔레그램 봇 알림 (선택)
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
-
-# 텔레그램 신호 채널 (선택, MTProto)
-TELEGRAM_API_ID=...
-TELEGRAM_API_HASH=...
-TELEGRAM_SIGNAL_CHANNEL=...
 ```
 
 ---
@@ -414,7 +434,8 @@ TELEGRAM_SIGNAL_CHANNEL=...
   - `data\rebalance_execution_2026-05-12.json`
   - `execution_match_status=matched`
 - 현재 안전 운영 기준:
-  - 실행 전 `--top-n 10` 사용 권장. `SAFETY.max_daily_buys`가 10이라 `--top-n 20`은 사전 차단될 수 있다.
+  - `scripts/daily_paper_run.py` 기본 `--top-n`은 `PORTFOLIO.n_holdings` (`30`)를 따른다.
+  - `SAFETY.max_daily_buys`는 `10`으로 유지한다. 목표 리스트는 30종목으로 만들되, 신규 매수는 하루 최대 10건씩 단계적으로 채운다.
   - KIS 현재가 조회의 일시적 `500`은 `price_retry,...,success`이면 복구된 조회 실패 기록이다. `price_retry_failed_count`, `price_lookup_failed_count`, `price_fallback_count`가 0인지 확인한다.
 
 ### 2026-05-12: Agent operations dashboard
@@ -435,11 +456,13 @@ TELEGRAM_SIGNAL_CHANNEL=...
   - `scripts/daily_paper_run.py`
   - `tests/trading/test_daily_paper_run.py`
 - 매일 아침 운영 플로우를 한 명령으로 묶었다:
+  - read-only Hankyung and Mirae research refresh
   - Phase 1 sync
   - dry-run prepare/review
   - readiness check
   - PAPER execution
   - post execution report review
+  - run-bundle archive
   - intraday stop-loss/trailing-stop monitor
 - 안전 경계:
   - `--confirm EXECUTE_PAPER_REBALANCE` 없이는 시작하지 않는다.
@@ -500,29 +523,10 @@ Summary:
 - Same-day rule prevents old Busanstock news from carrying into later trading dates.
 - Scheduler polls Busanstock every 15 minutes from 06:00-09:00 KST on weekdays.
 
-### 2026-05-09: Telegram stock score stabilization
+### 2026-05-09: Removed stock-signal history
 
-Added/changed files:
-- `src/signals/telegram_parser.py`
-- `scripts/smoke_test_telegram_signals.py`
-- `tests/signals/test_telegram_parser.py`
-- `tests/signals/test_telegram_reader.py`
-- `tests/signals/test_smoke_test_telegram_signals.py`
-- `tests/data/test_repositories.py`
-- `tests/factors/test_rank_script.py`
-
-Summary:
-- Fixed `telegram_signals` upsert for models that do not have `updated_at`.
-- Replaced garbled Telegram morning-brief parser rules with UTF-8 Korean parsing.
-- Parser now emits canonical `signal_type`: `positive` / `warning`.
-- Table rows parse star rating and TP; section-only warning rows become negative raw scores.
-- Parser resolves Korean stock names to tickers using active `stocks` DB rows.
-- Telegram signal fetch now scans 20 recent messages by default via `TELEGRAM_SIGNAL_FETCH_LIMIT`.
-- Telegram signal storage now replaces rows for the same message date to remove stale false matches.
-- Parser ignores URL digits and markdown source-link names to avoid false ticker matches.
-- Added reader integration test for Telegram message -> parser -> DB storage.
-- Added `scripts/smoke_test_telegram_signals.py` for signal fetch diagnostics without orders.
-- `rank_phase2_factors.py` now prints `score_count`, `telegram_scored_count`, `telegram_coverage`, and per-row `telegram=...`.
+The former MTProto Telegram stock-signal path was superseded by the
+2026-06-11 improvement-roadmap cleanup. Telegram remains notification-only.
 
 ### 2026-05-09: PAPER 리밸런싱 실행 안전 흐름
 
@@ -556,22 +560,10 @@ Summary:
 - 실제 주문 직전에도 `execute_rebalance(..., preflight_report_path=..., expected_preflight_date=...)`가 fallback 가격, 실시간 호가 실패, 날짜 불일치를 다시 차단한다.
 - `review_rebalance_reports.py`는 KIS/DB에 접속하지 않고 드라이런 JSON과 실행 결과 JSON만 읽어서 사람이 확인할 요약을 출력한다.
 
-### 2026-05-06: 텔레그램 신호 통합
+### 2026-05-06: Removed stock-signal integration
 
-추가한 파일:
-- `src/signals/__init__.py`
-- `src/signals/telegram_parser.py`
-- `src/signals/telegram_reader.py`
-- `tests/signals/test_telegram_parser.py`
-
-수정한 파일:
-- `requirements.txt` — `telethon==1.38.1` 추가
-- `config.py` — `TelegramSignalConfig`, `FactorConfig.telegram_weight` 추가
-- `src/data/models.py` — `TelegramSignal` 테이블 추가
-- `src/data/repositories.py` — `upsert_telegram_signals`, `get_latest_telegram_signals` 추가
-- `src/factors/models.py` — `FactorScore.telegram_score` 필드 추가 (yield_score와 total_score 사이)
-- `src/factors/engine.py` — 텔레그램 신호 로드 및 팩터 반영
-- `src/trading/scheduler.py` — `_telegram_signal_job` 추가, 오전 6–9시 15분 폴링
+This historical stock-signal integration was removed in the 2026-06-11
+improvement-roadmap cleanup. Current Telegram support is notification-only.
 
 ### 2026-05-06 이전: 네이버 뉴스 API 전면 삭제
 
@@ -616,7 +608,7 @@ KIS/dry-run parser targeted 결과: `44 passed`
 
 특정 모듈만:
 ```powershell
-.\venv\Scripts\pytest.exe tests/signals/ -v          # 텔레그램 파서 8개
+.\venv\Scripts\pytest.exe tests/signals/ -v          # signal parsers/readers
 .\venv\Scripts\pytest.exe tests/factors/ -v          # 팩터 엔진
 .\venv\Scripts\pytest.exe tests/data/ -v             # DB/수집기
 .\venv\Scripts\pytest.exe tests/trading/ -v          # 트레이딩 엔진
@@ -678,9 +670,6 @@ KIS/dry-run parser targeted 결과: `44 passed`
 # 에이전트 운영 대시보드 생성: 로컬 파일만 읽고 주문/API 호출 없음
 .\venv\Scripts\python.exe scripts\generate_agent_ops_dashboard.py --expected-date 2026-05-12
 
-# Telegram stock-score signal smoke test (orders are never submitted)
-.\venv\Scripts\python.exe scripts\smoke_test_telegram_signals.py --as-of-date 2026-05-06
-
 # Busanstock news/consensus overlay smoke test (orders are never submitted)
 .\venv\Scripts\python.exe scripts\smoke_test_busanstock_signals.py --as-of-date 2026-05-06
 
@@ -699,9 +688,9 @@ KIS/dry-run parser targeted 결과: `44 passed`
 
 2. **KRX 로그인**: `KRX_ID`/`KRX_PW` 없으면 pykrx가 빈 JSON 반환 → `RuntimeError: no market data rows collected`. `.env`에 KRX 계정 필수.
 
-3. **텔레그램 신호 첫 실행**: `telethon` 최초 실행 시 전화번호 + OTP 필요. 인터랙티브 환경에서 한 번 실행해 `data/telegram_signal.session` 생성 후 봇에서 사용.
+3. **Telegram 알림 권한**: 알림은 Bot API만 사용한다. `TELEGRAM_BOT_TOKEN`과 `TELEGRAM_CHAT_ID`가 맞고 봇이 대상 채팅에 접근할 수 있어야 한다.
 
-4. **FactorScore 위치 인자 순서**: `telegram_score`가 `yield_score`와 `total_score` 사이 9번째 필드. `busanstock_score`, `investor_flow_score`는 기본값이 있는 후행 필드다.
+4. **FactorScore 위치 인자 순서**: `technical_score`, `auxiliary_score`, `busanstock_score`, `investor_flow_score`, `research_report_score`는 후행 필드다.
 
 5. **PAPER 리밸런싱 실행 조건**: 같은 날짜의 clean dry-run JSON이 필요하다. fallback 가격이나 실시간 호가 실패가 있으면 preflight가 주문 전 차단한다. 수동 실행 스크립트는 기본적으로 평일 09:00-15:20 KST에서만 주문을 허용한다.
 

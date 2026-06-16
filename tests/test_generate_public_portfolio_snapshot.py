@@ -8,7 +8,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scripts.generate_public_portfolio_snapshot import (
+    _account_snapshot_from_kis_balance,
     build_snapshot,
+    fetch_live_market_snapshot,
     load_json_file,
     run,
 )
@@ -41,7 +43,8 @@ def test_build_snapshot_summarizes_holdings_and_merges_dry_run_rationale() -> No
                 "quality_score": 0.2,
                 "momentum_score": 0.3,
                 "yield_score": 0.4,
-                "telegram_score": 0.5,
+                "technical_score": 0.5,
+                "auxiliary_score": 0.6,
                 "busanstock_score": 0.6,
                 "investor_flow_score": 0.7,
             }
@@ -59,6 +62,15 @@ def test_build_snapshot_summarizes_holdings_and_merges_dry_run_rationale() -> No
     snapshot = build_snapshot(
         holdings,
         dry_run=dry_run,
+        account={
+            "cash": {"available": 280000, "withdrawable": 270000},
+            "realized": {"profit_loss": 12000, "source": "kis_balance"},
+        },
+        market={
+            "kospi": {"value": 2780.5, "chg_pct": 0.5},
+            "kosdaq": {"value": 900.2, "chg_pct": -0.1},
+            "usdkrw": {"value": 1365.4, "chg_pct": 0.2},
+        },
         generated_at=datetime(2026, 5, 12, 9, 15, tzinfo=KST),
     )
 
@@ -66,15 +78,106 @@ def test_build_snapshot_summarizes_holdings_and_merges_dry_run_rationale() -> No
     assert snapshot["source"]["dashboard_calls_kis"] is False
     assert snapshot["summary"]["holding_count"] == 1
     assert snapshot["summary"]["total_market_value"] == 720000
+    assert snapshot["summary"]["cash_balance"] == 280000
+    assert snapshot["summary"]["total_asset_value"] == 1000000
     assert snapshot["summary"]["total_cost"] == 700000
     assert snapshot["summary"]["total_profit_loss"] == 20000
     assert snapshot["summary"]["total_profit_loss_rate"] == 2.86
+    assert snapshot["cash"]["available"] == 280000
+    assert snapshot["realized"]["profit_loss"] == 12000
+    assert snapshot["market"]["kospi"]["value"] == 2780.5
     position = snapshot["positions"][0]
     assert position["market_value"] == 720000
     assert position["profit_loss"] == 20000
     assert position["rationale"]["rank"] == 1
     assert position["rationale"]["order_reason"] == "target allocation buy"
+    assert position["rationale"]["factor_scores"]["technical"] == 0.5
+    assert position["rationale"]["factor_scores"]["auxiliary"] == 0.6
     assert position["rationale"]["factor_scores"]["investor_flow"] == 0.7
+
+
+def test_fetch_live_market_snapshot_parses_yahoo_chart_responses() -> None:
+    payloads = {
+        "KS11": {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"regularMarketPrice": 2780.5, "chartPreviousClose": 2760.0},
+                    }
+                ]
+            }
+        },
+        "KQ11": {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"regularMarketPrice": 900.2, "chartPreviousClose": 901.1},
+                    }
+                ]
+            }
+        },
+        "KRW=X": {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"regularMarketPrice": 1365.4, "chartPreviousClose": 1360.0},
+                    }
+                ]
+            }
+        },
+    }
+
+    def fetcher(symbol: str) -> dict:
+        return payloads[symbol]
+
+    market = fetch_live_market_snapshot(
+        fetcher=fetcher,
+        generated_at=datetime(2026, 5, 22, 16, 30, tzinfo=KST),
+    )
+
+    assert market["kospi"] == {"value": 2780.5, "chg_pct": 0.7428}
+    assert market["kosdaq"] == {"value": 900.2, "chg_pct": -0.0999}
+    assert market["usdkrw"] == {"value": 1365.4, "chg_pct": 0.3971}
+    assert market["status"] in {"OPEN", "CLOSED"}
+
+
+def test_account_snapshot_from_kis_balance_extracts_cash_assets_and_realized() -> None:
+    raw = {
+        "output1": [
+            {
+                "pdno": "005930",
+                "prdt_name": "Samsung Electronics",
+                "hldg_qty": "10",
+                "pchs_avg_pric": "70000",
+                "prpr": "72000",
+                "evlu_pfls_amt": "20000",
+                "evlu_pfls_rt": "2.86",
+            }
+        ],
+        "output2": [
+            {
+                "dnca_tot_amt": "280000",
+                "nxdy_excc_amt": "270000",
+                "tot_evlu_amt": "1000000",
+                "scts_evlu_amt": "720000",
+                "prvs_rcdl_excc_amt": "280000",
+                "rlzt_pfls_amt": "12000",
+            }
+        ],
+    }
+
+    account = _account_snapshot_from_kis_balance(raw)
+
+    assert account["holdings"][0]["ticker"] == "005930"
+    assert account["cash"] == {
+        "available": 280000,
+        "withdrawable": 270000,
+        "deposit_total": 280000,
+        "derived_from_total_asset": 280000,
+        "source": "kis_balance",
+    }
+    assert account["total_asset_value"] == 1000000
+    assert account["realized"] == {"profit_loss": 12000, "source": "kis_balance"}
 
 
 def test_build_snapshot_preserves_holding_when_rationale_is_missing() -> None:
@@ -204,7 +307,8 @@ def test_build_snapshot_uses_factor_details_when_dry_run_target_has_only_total_s
                 "quality": 0.2,
                 "momentum": 0.3,
                 "yield": 0.4,
-                "telegram": 0.0,
+                "technical": 0.5,
+                "auxiliary": 0.6,
                 "busanstock": 0.6,
                 "investor_flow": 0.7,
                 "research_report": 0.8,
@@ -218,14 +322,15 @@ def test_build_snapshot_uses_factor_details_when_dry_run_target_has_only_total_s
         "quality": 0.2,
         "momentum": 0.3,
         "yield": 0.4,
-        "telegram": 0.0,
+        "technical": 0.5,
+        "auxiliary": 0.6,
         "busanstock": 0.6,
         "investor_flow": 0.7,
         "research_report": 0.8,
     }
 
 
-def test_telegram_signal_summary_does_not_expose_message_id() -> None:
+def test_signal_summary_does_not_expose_internal_ids() -> None:
     snapshot = build_snapshot(
         [
             {

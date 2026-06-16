@@ -15,10 +15,28 @@ def test_create_tables_creates_phase1_tables():
         "daily_prices",
         "fundamentals",
         "sync_runs",
-        "telegram_signals",
         "busanstock_signals",
         "investor_flows",
+        "macro_indicator_releases",
     } <= table_names
+    stock_columns = {column["name"] for column in inspect(engine).get_columns("stocks")}
+    assert "instrument_type" in stock_columns
+    macro_columns = {
+        column["name"] for column in inspect(engine).get_columns("macro_indicator_releases")
+    }
+    assert {
+        "indicator",
+        "period_date",
+        "release_date",
+        "value",
+        "previous_value",
+        "unit",
+        "source",
+        "source_url",
+        "impact_rule",
+        "importance",
+        "updated_at",
+    } <= macro_columns
 
 
 def test_session_scope_commits_changes():
