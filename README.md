@@ -26,6 +26,12 @@ rebalance operations.
 # Validate config.
 .\venv\Scripts\python.exe config.py
 
+# Run the one-command PAPER daily flow during regular KST market hours.
+.\venv\Scripts\python.exe scripts\daily_paper_run.py --confirm EXECUTE_PAPER_REBALANCE
+
+# Print the runbook/fallback commands without placing orders.
+.\venv\Scripts\python.exe scripts\print_rebalance_operations_checklist.py --as-of-date 2026-06-15 --top-n 30
+
 # Sync recent market data.
 .\venv\Scripts\python.exe scripts\sync_phase1_data.py --start-date 2026-05-01 --end-date 2026-05-12 --workers 1
 
@@ -41,6 +47,20 @@ rebalance operations.
 # Run tests.
 .\venv\Scripts\python.exe -m pytest -q
 ```
+
+## Daily PAPER Operation
+
+Use `scripts\daily_paper_run.py` for the normal one-command PAPER trading day:
+read-only Hankyung and Mirae research refresh, Phase 1 sync, dry-run review,
+readiness check, PAPER execution, post-review, bundle archive, then a
+terminal-held intraday stop-loss/trailing-stop monitor. Keep the terminal open
+after success; closing it stops the intraday monitor.
+
+Use `scripts\run_bot.py` instead only when you want the full scheduler from
+before the market opens: pre-market sync, scheduled rebalance, stop monitor,
+intraday macro dry-run, Busanstock polling, and research-report polling. Do not
+run `daily_paper_run.py` and `run_bot.py` at the same time on the same trading
+day.
 
 ## Important Files
 

@@ -653,6 +653,41 @@ def test_run_backtest_post_profit_trailing_bucket_sells_independently():
     assert reasons == ["profit_take_20", "post_profit_trailing_stop"]
 
 
+def test_run_backtest_post_profit_trailing_uses_dedicated_default_threshold():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    seed_single_stock_prices(
+        engine,
+        [
+            (date(2026, 1, 1), 100, 100),
+            (date(2026, 1, 2), 100, 121),
+            (date(2026, 1, 3), 122, 130),
+            (date(2026, 1, 4), 118, 118.3),
+            (date(2026, 1, 5), 119, 119),
+        ],
+    )
+
+    result = run_backtest(
+        engine,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+        scoring_func=score_always_aaa,
+        initial_capital=10_000,
+        top_n=1,
+        commission_rate=0.0,
+        tax_rate_kospi=0.0,
+        tax_rate_kosdaq=0.0,
+        slippage_rate=0.0,
+        stop_loss_pct=-0.05,
+        trailing_stop_pct=-0.08,
+        profit_take_pct=0.20,
+        weighting="equal",
+    )
+
+    reasons = [trade.reason for trade in result.trades if trade.side == "SELL"]
+    assert reasons == ["profit_take_20"]
+
+
 def test_run_backtest_post_profit_breakeven_bucket_sells_independently():
     engine = get_engine("sqlite:///:memory:")
     create_tables(engine)
@@ -680,7 +715,7 @@ def test_run_backtest_post_profit_breakeven_bucket_sells_independently():
         slippage_rate=0.0,
         stop_loss_pct=-0.05,
         profit_take_pct=0.20,
-        trailing_stop_pct=-0.50,
+        post_profit_trailing_stop_pct=-0.50,
         weighting="equal",
     )
 

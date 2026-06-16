@@ -15,6 +15,38 @@
   `value_score`, `quality_score`, `momentum_score`, `yield_score`,
   `technical_score`, `auxiliary_score`, and `total_score`.
 
+## Daily PAPER operations
+
+Use the checklist first when preparing an operator-facing command sequence:
+
+```powershell
+.\venv\Scripts\python.exe scripts\print_rebalance_operations_checklist.py --as-of-date 2026-06-15 --top-n 30
+```
+
+Recommended daily command:
+
+```powershell
+.\venv\Scripts\python.exe scripts\daily_paper_run.py --confirm EXECUTE_PAPER_REBALANCE
+```
+
+The daily runner now performs the read-only Hankyung and Mirae research
+pipelines, Phase 1 sync, dry-run prepare/review, readiness, PAPER execution,
+post-review, run-bundle archive, and then the intraday stop-loss/trailing-stop
+monitor. Keep that terminal open after success; closing it stops the intraday
+monitor.
+
+Maintenance:
+- Use `scripts\cleanup_rebalance_checklist_logs.py --keep 20` as a dry-run
+  maintenance check; add `--apply` only when intentionally deleting old logs.
+
+Alternative scheduler mode:
+- `scripts\run_bot.py` is the broader all-day scheduler: pre-market sync,
+  scheduled rebalance, stop monitor, intraday macro dry-run, Busanstock polling,
+  and research-report polling.
+- Do not run `daily_paper_run.py` and `run_bot.py` at the same time on the same
+  trading day. The daily runner intentionally starts only the stop monitor after
+  PAPER execution to avoid registering another daily rebalance job.
+
 ## Agent work continuity dashboard
 
 The local agent work continuity dashboard helps recover context after switching
@@ -276,7 +308,7 @@ scripts/
   compare_rebalance_reports.py 두 dry-run JSON 리포트의 목표/매수 변화 비교
   archive_rebalance_run_bundle.py
                               운영일별 dry-run/readiness/review/checklist 산출물 보관
-  daily_paper_run.py          동기화→드라이런→readiness→PAPER 실행→리뷰→장중 손절/트레일링 감시
+  daily_paper_run.py          research -> sync -> dry-run -> readiness -> PAPER execution -> review -> archive -> intraday stop monitor
 tests/                        pytest, 각 src 모듈 1:1 대응
 ```
 
@@ -424,11 +456,13 @@ TELEGRAM_CHAT_ID=...
   - `scripts/daily_paper_run.py`
   - `tests/trading/test_daily_paper_run.py`
 - 매일 아침 운영 플로우를 한 명령으로 묶었다:
+  - read-only Hankyung and Mirae research refresh
   - Phase 1 sync
   - dry-run prepare/review
   - readiness check
   - PAPER execution
   - post execution report review
+  - run-bundle archive
   - intraday stop-loss/trailing-stop monitor
 - 안전 경계:
   - `--confirm EXECUTE_PAPER_REBALANCE` 없이는 시작하지 않는다.

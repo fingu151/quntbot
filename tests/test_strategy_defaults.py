@@ -4,6 +4,7 @@ from config import EXIT_RULES, REBALANCE, SAFETY
 def test_adopted_exit_strategy_defaults_match_tuned_adaptive_alpha():
     assert EXIT_RULES.stop_loss_pct == -0.07
     assert EXIT_RULES.trailing_stop_pct == -0.08
+    assert EXIT_RULES.post_profit_trailing_stop_pct == -0.10
     assert EXIT_RULES.stop_cooldown_days == 3
     assert EXIT_RULES.profit_take_pct == 0.16
     assert EXIT_RULES.profit_take_sell_fraction == 0.45

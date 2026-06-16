@@ -64,11 +64,21 @@ def test_parse_args_accepts_rebalance_frequency():
 
 def test_parse_args_accepts_stop_thresholds():
     args = parse_args(
-        ["--stop-loss-pct", "-0.05", "--trailing-stop-pct", "-0.07", "--stop-cooldown-days", "3"]
+        [
+            "--stop-loss-pct",
+            "-0.05",
+            "--trailing-stop-pct",
+            "-0.07",
+            "--post-profit-trailing-stop-pct",
+            "-0.10",
+            "--stop-cooldown-days",
+            "3",
+        ]
     )
 
     assert args.stop_loss_pct == -0.05
     assert args.trailing_stop_pct == -0.07
+    assert args.post_profit_trailing_stop_pct == -0.10
     assert args.stop_cooldown_days == 3
 
 
@@ -293,6 +303,8 @@ def test_run_passes_stop_thresholds_to_backtest():
             "-0.05",
             "--trailing-stop-pct",
             "-0.07",
+            "--post-profit-trailing-stop-pct",
+            "-0.10",
             "--stop-cooldown-days",
             "3",
         ]
@@ -302,6 +314,7 @@ def test_run_passes_stop_thresholds_to_backtest():
 
     assert captured_kwargs["stop_loss_pct"] == -0.05
     assert captured_kwargs["trailing_stop_pct"] == -0.07
+    assert captured_kwargs["post_profit_trailing_stop_pct"] == -0.10
     assert captured_kwargs["stop_cooldown_days"] == 3
 
 

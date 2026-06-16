@@ -27,6 +27,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--top-n", type=int, default=DEFAULT_ADAPTIVE_ALPHA.top_n)
     parser.add_argument("--sell-rank-buffer", type=int, default=DEFAULT_ADAPTIVE_ALPHA.sell_rank_buffer)
     parser.add_argument("--trailing-stop-pct", type=float, default=DEFAULT_ADAPTIVE_ALPHA.trailing_stop_pct)
+    parser.add_argument(
+        "--post-profit-trailing-stop-pct",
+        type=float,
+        default=DEFAULT_ADAPTIVE_ALPHA.post_profit_trailing_stop_pct,
+    )
     parser.add_argument("--atr-multiplier", type=float, default=DEFAULT_ADAPTIVE_ALPHA.atr_multiplier)
     parser.add_argument("--profit-take-pct", type=float, default=DEFAULT_ADAPTIVE_ALPHA.profit_take_pct)
     parser.add_argument("--commission-rate", type=float, default=COST.commission_rate)
@@ -44,6 +49,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--sell-rank-buffer must be greater than or equal to --top-n")
     if args.trailing_stop_pct >= 0:
         parser.error("--trailing-stop-pct must be negative")
+    if args.post_profit_trailing_stop_pct >= 0:
+        parser.error("--post-profit-trailing-stop-pct must be negative")
     if args.atr_multiplier <= 0:
         parser.error("--atr-multiplier must be greater than 0")
     if args.profit_take_pct <= 0:
@@ -58,6 +65,7 @@ def run(args: argparse.Namespace) -> int:
         top_n=args.top_n,
         sell_rank_buffer=args.sell_rank_buffer,
         trailing_stop_pct=args.trailing_stop_pct,
+        post_profit_trailing_stop_pct=args.post_profit_trailing_stop_pct,
         atr_multiplier=args.atr_multiplier,
         profit_take_pct=args.profit_take_pct,
     )

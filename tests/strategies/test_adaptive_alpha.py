@@ -130,6 +130,7 @@ def test_run_adaptive_alpha_backtest_passes_isolated_strategy_defaults():
     assert captured["top_n"] == 30
     assert captured["stop_loss_pct"] == -0.07
     assert captured["trailing_stop_pct"] == -0.08
+    assert captured["post_profit_trailing_stop_pct"] == -0.10
     assert captured["stop_cooldown_days"] == 3
     assert captured["enable_atr_stop"] is True
     assert captured["atr_multiplier"] == 2.2

@@ -28,6 +28,7 @@ class AdaptiveAlphaConfig:
     max_position_weight: float = 0.12
     stop_loss_pct: float = -0.07
     trailing_stop_pct: float = -0.08
+    post_profit_trailing_stop_pct: float = -0.10
     stop_cooldown_days: int = 3
     profit_take_pct: float = 0.16
     profit_take_sell_fraction: float = 0.45
@@ -159,6 +160,7 @@ def run_adaptive_alpha_backtest(
         "top_n": config.top_n,
         "stop_loss_pct": config.stop_loss_pct,
         "trailing_stop_pct": config.trailing_stop_pct,
+        "post_profit_trailing_stop_pct": config.post_profit_trailing_stop_pct,
         "stop_cooldown_days": config.stop_cooldown_days,
         "enable_atr_stop": True,
         "atr_window": config.atr_window,

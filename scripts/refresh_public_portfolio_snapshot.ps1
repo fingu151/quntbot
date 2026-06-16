@@ -3,7 +3,7 @@ param(
     [int]$RunTimeoutMinutes = 5,
     [string]$PythonPath = ".\venv\Scripts\python.exe",
     [string]$OutputPath = "data\public_portfolio_snapshot.json",
-    [string]$RefreshedThrough = "2026-05-15",
+    [string]$RefreshedThrough = "",
     [switch]$IncludeSupplementalDiscovery,
     [switch]$SkipSupplementalSources,
     [switch]$RunOnce
@@ -26,6 +26,12 @@ function Write-RefreshLog {
     param([string]$Message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "$timestamp $Message" | Tee-Object -FilePath $LogPath -Append
+}
+
+function Get-KstTodayString {
+    $tz = [System.TimeZoneInfo]::FindSystemTimeZoneById("Korea Standard Time")
+    $kstToday = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $tz).Date
+    return $kstToday.ToString("yyyy-MM-dd")
 }
 
 function Invoke-LoggedProcess {
@@ -81,6 +87,10 @@ if ($IntervalMinutes -lt 1) {
 if ($RunTimeoutMinutes -lt 1) {
     Write-RefreshLog "RunTimeoutMinutes must be at least 1."
     exit 2
+}
+
+if (-not $RefreshedThrough) {
+    $RefreshedThrough = Get-KstTodayString
 }
 
 Write-RefreshLog "Starting public snapshot refresh loop. interval_minutes=$IntervalMinutes run_timeout_minutes=$RunTimeoutMinutes output=$OutputPath refreshed_through=$RefreshedThrough include_supplemental_discovery=$IncludeSupplementalDiscovery skip_supplemental_sources=$SkipSupplementalSources"

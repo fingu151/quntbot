@@ -1,5 +1,84 @@
 # quntbot Progress Log
 
+## 2026-06-15 Post-profit trailing stop split
+
+- Kept the first profit take unchanged: +16% trigger and 45% sell fraction.
+- Added a post-profit-only trailing stop threshold:
+  `EXIT_RULES.post_profit_trailing_stop_pct=-0.10`.
+- Kept legacy `EXIT_RULES.trailing_stop_pct=-0.08` separate, so only the
+  trailing bucket left after first profit take waits for a -10% drawdown from
+  its recorded peak.
+- The remaining post-profit quantity split stays unchanged: half to trailing,
+  remainder to breakeven.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Follow-up audit
+
+- Found and fixed one blocking inconsistency: the live engine used the new
+  post-profit-only -10% trailing threshold, but the backtest engine still used
+  `trailing_stop_pct` for post-profit trailing exits.
+- Added `post_profit_trailing_stop_pct` to the backtest engine, Phase 3
+  backtest CLI, backtest matrix CLI, and Adaptive Alpha wrappers so simulated
+  exits match the live staged exit monitor.
+
+### Verification
+
+- RED:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_post_profit_trailing_waits_until_ten_pct_drawdown tests\test_strategy_defaults.py::test_adopted_exit_strategy_defaults_match_tuned_adaptive_alpha -q`
+  failed because the post-profit field did not exist and the engine sold the
+  trailing bucket at a -9% drawdown.
+- GREEN:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_post_profit_trailing_waits_until_ten_pct_drawdown tests\test_strategy_defaults.py::test_adopted_exit_strategy_defaults_match_tuned_adaptive_alpha -q`
+  -> `2 passed`.
+- Related trading tests:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py tests\trading\test_rebalance_policy.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py -q`
+  -> `80 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall config.py src\trading scripts\dry_run_rebalance.py tests\trading`
+  -> passed.
+- Follow-up RED:
+  `.\venv\Scripts\python.exe -m pytest tests\backtest\test_backtest_engine.py::test_run_backtest_post_profit_trailing_uses_dedicated_default_threshold tests\backtest\test_run_script.py::test_parse_args_accepts_stop_thresholds tests\backtest\test_run_script.py::test_run_passes_stop_thresholds_to_backtest tests\strategies\test_adaptive_alpha.py::test_run_adaptive_alpha_backtest_passes_isolated_strategy_defaults -q`
+  failed because backtests still sold at a -9% post-profit drawdown and the
+  CLI/wrapper paths did not expose the new threshold.
+- Follow-up GREEN:
+  same command -> `4 passed`.
+- Broader related tests:
+  `.\venv\Scripts\python.exe -m pytest tests\test_strategy_defaults.py tests\trading\test_engine.py tests\trading\test_rebalance_policy.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py tests\backtest\test_backtest_engine.py tests\backtest\test_run_script.py tests\strategies\test_adaptive_alpha.py tests\strategies\test_run_adaptive_alpha_matrix.py -q`
+  -> `151 passed`.
+- Broader syntax check:
+  `.\venv\Scripts\python.exe -m compileall config.py src\trading src\backtest src\strategies scripts\run_phase3_backtest.py scripts\run_backtest_matrix.py scripts\run_adaptive_alpha_backtest.py scripts\run_adaptive_alpha_matrix.py scripts\dry_run_rebalance.py tests\trading tests\backtest tests\strategies`
+  -> passed.
+
+## 2026-06-15 Post-profit exit protection fix
+
+- Confirmed a live-rule mismatch: after the first profit take, the staged exit
+  monitor could still hit the fixed full-position stop before the intended
+  trailing/breakeven residual buckets. This could close the whole remaining
+  position instead of letting the post-profit buckets run.
+- Added a rebalance protection gate for tickers with `profit_take_done=true`
+  and active `trailing_qty` or `breakeven_qty`, so ordinary rank-buffer
+  rebalance sells do not fully clear those residual buckets.
+- Current local `data/exit_state.json` has 36 states and 6 protected
+  post-profit tickers: `005850`, `028050`, `028260`, `034730`, `069960`,
+  `383220`.
+- No PAPER/LIVE orders were submitted during this change.
+
+### Verification
+
+- RED:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_does_not_full_stop_after_profit_take tests\trading\test_rebalance_policy.py -q`
+  first failed because the rebalance protection helper did not exist and then
+  because `exit_full_stop` still sold the full post-profit position.
+- GREEN:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py::test_check_exit_rules_does_not_full_stop_after_profit_take tests\trading\test_rebalance_policy.py -q`
+  -> `3 passed`.
+- Related trading tests:
+  `.\venv\Scripts\python.exe -m pytest tests\trading\test_engine.py tests\trading\test_rebalance_policy.py tests\trading\test_dry_run_rebalance.py tests\trading\test_scheduler.py -q`
+  -> `79 passed`.
+- Syntax check:
+  `.\venv\Scripts\python.exe -m compileall src\trading scripts\dry_run_rebalance.py tests\trading\test_engine.py tests\trading\test_rebalance_policy.py`
+  -> passed.
+
 ## 2026-06-11 US macro exposure overlay
 
 ### Completed
@@ -4180,3 +4259,9 @@ Exit-rule variants on top15 weekly (baseline: ATR 2.2x + stop -7% + profit take 
   `venv\Scripts\python.exe scripts\sync_phase1_quality.py --year-from 2020 --year-to 2023 --single-account-only`
   (expect ~10 min per year when healthy), then re-run the top15-vs-top30 comparison over
   2020-07~2026-05 and the 2021-07~2023-01 bear window before changing n_holdings.
+
+## 2026-06-15 PAPER trade journal v1
+
+- Added PAPER-only trade journal tables and reporting for future bot orders. The v1 source of truth is KIS filled-order lookup; estimated fills and historical `rebalance_execution_*.json` backfills are intentionally excluded.
+- Rebalance execution and exit-monitor sells now attempt read-only fill lookup after accepted PAPER orders. If fills are delayed or lookup fails after short retries, the run is recorded as `unmatched` and no order is retried.
+- Reports are generated to `data/trade_journal_latest.md`, `data/trade_journal_closed_trades.csv`, and `data/trade_journal_open_positions.csv`, using average-cost realized P&L and numeric review fields rather than narrative loss attribution.

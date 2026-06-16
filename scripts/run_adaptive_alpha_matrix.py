@@ -33,6 +33,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--atr-multipliers", type=_parse_floats, default=[2.0, 2.2])
     parser.add_argument("--profit-take-pcts", type=_parse_floats, default=[0.16, 0.18])
     parser.add_argument("--trailing-stop-pct", type=float, default=DEFAULT_ADAPTIVE_ALPHA.trailing_stop_pct)
+    parser.add_argument(
+        "--post-profit-trailing-stop-pct",
+        type=float,
+        default=DEFAULT_ADAPTIVE_ALPHA.post_profit_trailing_stop_pct,
+    )
     parser.add_argument("--slippage-rate", type=float, default=COST.slippage_rate)
     args = parser.parse_args(argv)
     if args.start_date > args.end_date:
@@ -49,6 +54,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--profit-take-pcts must be positive")
     if args.trailing_stop_pct >= 0:
         parser.error("--trailing-stop-pct must be negative")
+    if args.post_profit_trailing_stop_pct >= 0:
+        parser.error("--post-profit-trailing-stop-pct must be negative")
     if args.slippage_rate < 0:
         parser.error("--slippage-rate must be zero or greater")
     return args
@@ -76,6 +83,7 @@ def run(
                     top_n=args.top_n,
                     sell_rank_buffer=sell_rank_buffer,
                     trailing_stop_pct=args.trailing_stop_pct,
+                    post_profit_trailing_stop_pct=args.post_profit_trailing_stop_pct,
                     atr_multiplier=atr_multiplier,
                     profit_take_pct=profit_take_pct,
                 )

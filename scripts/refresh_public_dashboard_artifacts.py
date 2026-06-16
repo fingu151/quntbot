@@ -95,8 +95,14 @@ def build_refresh_commands(
         "--output",
         str(ticker_brief_output),
     ]
+    backfill_command = [
+        str(python_path),
+        "-m",
+        "scripts.backfill_research_report_briefs",
+    ]
     if database_url:
         snapshot_command.extend(["--database-url", database_url])
+        backfill_command.extend(["--database-url", database_url])
         ticker_command.extend(["--database-url", database_url])
     if fallback_existing_snapshot:
         snapshot_command.append("--fallback-existing-snapshot")
@@ -221,6 +227,7 @@ def build_refresh_commands(
             supplemental_discovery_commands[-1].extend(["--database-url", database_url])
         supplemental_discovery_commands.extend(
             [
+                backfill_command.copy(),
                 ticker_command.copy(),
                 quality_queue_command.copy(),
                 latest_report_followup_command.copy(),
@@ -230,6 +237,7 @@ def build_refresh_commands(
     commands.extend(
         [
             snapshot_command,
+            backfill_command,
             ticker_command,
             quality_queue_command,
             latest_report_followup_command,

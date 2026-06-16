@@ -236,6 +236,7 @@ class ExitRulesConfig:
 
     # ?몃젅?쇰쭅 ?ㅽ넲: 蹂댁쑀 ??理쒓퀬媛 ?鍮?-X% ?섎씫 ??留ㅻ룄
     trailing_stop_pct: float = -0.08  # -8%
+    post_profit_trailing_stop_pct: float = -0.10  # -10%
     # Calendar days to block rebuying a ticker after a stop exit. 0 preserves prior behavior.
     stop_cooldown_days: int = 3
     profit_take_pct: float = 0.16
@@ -453,6 +454,8 @@ def validate() -> list[str]:
         warnings.append("EXIT_RULES.stop_loss_pct ???뚯닔?ъ빞 ?⑸땲??")
     if EXIT_RULES.trailing_stop_pct >= 0:
         warnings.append("EXIT_RULES.trailing_stop_pct ???뚯닔?ъ빞 ?⑸땲??")
+    if EXIT_RULES.post_profit_trailing_stop_pct >= 0:
+        warnings.append("EXIT_RULES.post_profit_trailing_stop_pct must be negative.")
     if EXIT_RULES.profit_take_pct <= 0:
         warnings.append("EXIT_RULES.profit_take_pct must be positive.")
     if not 0 < EXIT_RULES.profit_take_sell_fraction < 1:

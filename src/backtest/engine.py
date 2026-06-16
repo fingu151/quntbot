@@ -74,6 +74,7 @@ def run_backtest(
     rebalance_frequency: str = REBALANCE.frequency,
     profit_take_pct: float = EXIT_RULES.profit_take_pct,
     profit_take_sell_fraction: float = EXIT_RULES.profit_take_sell_fraction,
+    post_profit_trailing_stop_pct: float = EXIT_RULES.post_profit_trailing_stop_pct,
     breakeven_stop_pct: float = EXIT_RULES.breakeven_stop_pct,
     sell_rank_buffer: int = REBALANCE.sell_rank_buffer,
     min_holding_trading_days: int = REBALANCE.min_holding_trading_days,
@@ -581,7 +582,7 @@ def run_backtest(
                 else:
                     trail_qty = trailing_bucket_qty.get(ticker, 0.0)
                     breakeven_qty = breakeven_bucket_qty.get(ticker, 0.0)
-                    if trail_qty > 0 and loss_from_peak <= trailing_stop_pct:
+                    if trail_qty > 0 and loss_from_peak <= post_profit_trailing_stop_pct:
                         pending_exits.append((ticker, "post_profit_trailing_stop", trail_qty))
                         trailing_bucket_qty[ticker] = 0.0
                     if breakeven_qty > 0 and return_from_entry <= breakeven_stop_pct:

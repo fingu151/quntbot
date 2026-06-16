@@ -37,15 +37,45 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def run(args: argparse.Namespace) -> int:
     as_of_date = str(args.as_of_date)
+    print(f"daily_operations_date={as_of_date}")
     print(f"rebalance_operations_date={as_of_date}")
     print("orders_submitted=0")
-    print("step,command")
-    print(f"prepare_and_review,{_prepare_and_review_command(args)}")
-    print(f"readiness_check,{_readiness_command(args)}")
-    print(f"execute_paper_orders,{_execute_command(args)}")
-    print(f"post_execution_review,{_post_review_command(args)}")
-    print(f"archive_run_bundle,{_archive_bundle_command(args)}")
+    print("mode,step,command")
+    print(f"recommended,daily_paper_run,{_daily_paper_run_command(args)}")
+    print(
+        "daily_paper_run_includes="
+        "research,sync,prepare_review,readiness,execute,post_review,archive,monitor"
+    )
+    print(f"maintenance,cleanup_checklist_logs,{_cleanup_logs_command()}")
+    print(f"alternative,full_scheduler,{_full_scheduler_command()}")
+    print("safety_note=do_not_run_daily_paper_run_and_run_bot_together")
+    print(
+        "archive_note=use the execution_report_json path printed by "
+        "daily_paper_run if it chose a retry file"
+    )
+    print(f"manual,prepare_and_review,{_prepare_and_review_command(args)}")
+    print(f"manual,readiness_check,{_readiness_command(args)}")
+    print(f"manual,execute_paper_orders,{_execute_command(args)}")
+    print(f"manual,post_execution_review,{_post_review_command(args)}")
+    print(f"manual,archive_run_bundle,{_archive_bundle_command(args)}")
     return 0
+
+
+def _daily_paper_run_command(args: argparse.Namespace) -> str:
+    return " ".join([
+        r".\venv\Scripts\python.exe",
+        r"scripts\daily_paper_run.py",
+        "--as-of-date",
+        str(args.as_of_date),
+        "--top-n",
+        str(args.top_n),
+        "--dry-run-json",
+        str(args.dry_run_json),
+        "--dry-run-md",
+        str(args.dry_run_md),
+        "--confirm",
+        CONFIRM_TOKEN,
+    ])
 
 
 def _prepare_and_review_command(args: argparse.Namespace) -> str:
@@ -115,6 +145,22 @@ def _archive_bundle_command(args: argparse.Namespace) -> str:
         str(args.dry_run_md),
         "--execution-report-json",
         str(args.execution_report_json),
+    ])
+
+
+def _cleanup_logs_command() -> str:
+    return " ".join([
+        r".\venv\Scripts\python.exe",
+        r"scripts\cleanup_rebalance_checklist_logs.py",
+        "--keep",
+        "20",
+    ])
+
+
+def _full_scheduler_command() -> str:
+    return " ".join([
+        r".\venv\Scripts\python.exe",
+        r"scripts\run_bot.py",
     ])
 
 

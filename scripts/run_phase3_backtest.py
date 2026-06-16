@@ -35,6 +35,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--stop-loss-pct", type=float, default=EXIT_RULES.stop_loss_pct)
     parser.add_argument("--trailing-stop-pct", type=float, default=EXIT_RULES.trailing_stop_pct)
+    parser.add_argument(
+        "--post-profit-trailing-stop-pct",
+        type=float,
+        default=EXIT_RULES.post_profit_trailing_stop_pct,
+    )
     parser.add_argument("--stop-cooldown-days", type=int, default=EXIT_RULES.stop_cooldown_days)
     parser.add_argument("--enable-atr-stop", action=argparse.BooleanOptionalAction, default=EXIT_RULES.enable_atr_stop)
     parser.add_argument("--atr-window", type=int, default=EXIT_RULES.atr_window)
@@ -131,6 +136,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--stop-loss-pct must be negative")
     if args.trailing_stop_pct >= 0:
         parser.error("--trailing-stop-pct must be negative")
+    if args.post_profit_trailing_stop_pct >= 0:
+        parser.error("--post-profit-trailing-stop-pct must be negative")
     if args.stop_cooldown_days < 0:
         parser.error("--stop-cooldown-days must be zero or greater")
     if args.atr_window <= 0:
@@ -191,6 +198,7 @@ def run(
         rebalance_frequency=args.rebalance_frequency,
         stop_loss_pct=args.stop_loss_pct,
         trailing_stop_pct=args.trailing_stop_pct,
+        post_profit_trailing_stop_pct=args.post_profit_trailing_stop_pct,
         stop_cooldown_days=args.stop_cooldown_days,
         enable_atr_stop=args.enable_atr_stop,
         atr_window=args.atr_window,

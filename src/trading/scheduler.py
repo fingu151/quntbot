@@ -256,6 +256,7 @@ def _rebalance_job(
             db_engine=db_engine,
             as_of_date=run_date,
             min_holding_trading_days=REBALANCE.min_holding_trading_days,
+            protected_tickers=engine.get_rebalance_protected_tickers(),
         )
         if inverse_allowed:
             sell_eligible_tickers = [

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -28,6 +28,7 @@ from scripts.public_portfolio_dashboard import (
     _research_qa_action_queue_html,
     _research_operator_next_action_html,
     _research_report_card_html,
+    _research_freshness_html,
     _research_supplement_need_html,
     _research_quality_issue_html,
     _source_quality_label,
@@ -804,6 +805,58 @@ def test_build_ticker_research_briefs_consolidates_rows_without_llm_by_default()
     assert samsung["source_reports"][0]["title"] == "Samsung memory upcycle"
 
 
+def test_build_ticker_research_briefs_prefers_full_text_primary_and_rejects_fragments():
+    rows = [
+        {
+            "ticker": "012345",
+            "report_date": "2026-05-15",
+            "source": "hankyung_consensus",
+            "broker": "Broker Sparse",
+            "title": "Sparse latest note",
+            "summary": "and operating margins improved.",
+            "investment_opinion": "positive",
+            "buy_thesis": "and operating margins improved.",
+            "growth_drivers": "",
+            "earnings_drivers": "",
+            "valuation_view": "",
+            "risk_factors": "",
+            "new_business": "",
+            "confidence": 0.95,
+            "body_text_status": "title_or_sparse",
+            "evidence_terms": "company_update, title_or_sparse, brief-rule-v3",
+            "source_url": "https://example.test/sparse",
+        },
+        {
+            "ticker": "012345",
+            "report_date": "2026-05-14",
+            "source": "mirae_asset",
+            "broker": "Broker Full",
+            "title": "Full text primary report",
+            "summary": "Full text thesis stays coherent.",
+            "investment_opinion": "positive",
+            "buy_thesis": "Customer demand is recovering across core products.",
+            "growth_drivers": "New customer wins support revenue growth.",
+            "earnings_drivers": "Margin recovery continues as utilization improves.",
+            "valuation_view": "Peer multiples leave room for upside.",
+            "risk_factors": "Execution delays are the main risk.",
+            "new_business": "",
+            "confidence": 0.8,
+            "body_text_status": "full_text",
+            "evidence_terms": "earnings_review, full_text, brief-rule-v3",
+            "source_url": "https://example.test/full.pdf",
+        },
+    ]
+
+    artifact = build_ticker_research_briefs(rows, generated_at="2026-05-15T09:00:00+09:00")
+    brief = artifact["tickers"][0]
+
+    assert brief["latest_report_date"] == "2026-05-15"
+    assert brief["headline"] == "Full text thesis stays coherent."
+    assert brief["sections"]["stock_view"] == "Customer demand is recovering across core products."
+    assert "and operating margins improved" not in json.dumps(brief, ensure_ascii=False)
+    assert brief["quality"]["source_quality"] == "full_text"
+
+
 def test_build_ticker_research_briefs_uses_explicit_low_score_sections_but_skips_rating_noise():
     rows = [
         {
@@ -1333,7 +1386,7 @@ def test_render_dashboard_uses_separate_korean_task_tab(monkeypatch):
     render_dashboard(_sample_snapshot())
 
     tab_call = next(call for call in calls if call[0] == "tabs")
-    assert tab_call[1][0] == ["Portfolio", "Supplement Needs", "해야 할 작업", "Ticker Briefs", "Research Reports"]
+    assert tab_call[1][0] == ["Portfolio", "Supplement Needs", "Ticker Briefs", "Research Reports"]
 
 
 def test_dashboard_css_wraps_long_operational_text():
@@ -1421,6 +1474,53 @@ def test_build_research_supplement_needs_prioritizes_portfolio_missing_and_issue
     assert "stale_report" in needs[1]["reasons"]
 
 
+def test_build_research_supplement_needs_excludes_latest_not_found_backlog():
+    artifact = {
+        "tickers": [
+            {
+                "ticker": "000990",
+                "latest_report_date": "2026-01-21",
+                "sections": {
+                    "stock_view": "Foundry view.",
+                    "growth": "Foundry demand.",
+                    "earnings": "Margins recover.",
+                    "risk": "Cycle risk.",
+                },
+                "quality": {"source_quality": "full_text", "confidence": 0.9, "report_count": 1},
+            },
+            {
+                "ticker": "000520",
+                "latest_report_date": "2026-02-20",
+                "sections": {"stock_view": ""},
+                "quality": {"source_quality": "title_or_sparse", "confidence": 0.2, "report_count": 1},
+            },
+        ]
+    }
+    positions = [
+        {"ticker": "000990", "name": "DB HiTek"},
+        {"ticker": "000520", "name": "Samick THK"},
+    ]
+    queue_result = {
+        "status": "ok",
+        "action_by_ticker": {
+            "000990": "latest_report_not_found",
+            "000520": "supplemental_source_needed",
+        },
+    }
+
+    needs = build_research_supplement_needs(
+        artifact,
+        positions,
+        queue_result=queue_result,
+        now=datetime(2026, 5, 15, tzinfo=KST),
+        stale_days=45,
+    )
+
+    assert [row["ticker"] for row in needs] == ["000520"]
+    assert needs[0]["status"] == "needs_review"
+    assert "weak_source_quality" in needs[0]["reasons"]
+
+
 def test_research_supplement_need_html_renders_actionable_dashboard_card():
     html = _research_supplement_need_html(
         {
@@ -1458,6 +1558,93 @@ def test_research_quality_issue_html_renders_actionable_issue_summary():
     assert "missing_sections" in html
     assert "earnings, risk" in html
     assert "Sparse · 제목/요약 중심" in html
+
+
+def test_load_research_report_briefs_reports_signal_freshness_metadata():
+    engine = get_engine("sqlite:///:memory:")
+    create_tables(engine)
+    with session_scope(engine) as session:
+        upsert_research_report_signals(
+            session,
+            [
+                {
+                    "report_date": date(2026, 5, 15),
+                    "ticker": "005930",
+                    "source": "hankyung_consensus",
+                    "region": "domestic",
+                    "broker": "Test",
+                    "rating": "Buy",
+                    "rating_score": 0.6,
+                    "target_price": 100000,
+                    "previous_target_price": 90000,
+                    "target_price_change_pct": 11.1,
+                    "sentiment_score": 0.7,
+                    "raw_score": 0.7,
+                    "title": "Samsung earnings recovery",
+                    "source_url": "https://example.test/report.pdf",
+                },
+                {
+                    "report_date": date(2026, 5, 18),
+                    "ticker": "042510",
+                    "source": "hankyung_consensus",
+                    "region": "domestic",
+                    "broker": "Test",
+                    "rating": "Buy",
+                    "rating_score": 0.6,
+                    "target_price": 20000,
+                    "previous_target_price": 18000,
+                    "target_price_change_pct": 11.1,
+                    "sentiment_score": 0.7,
+                    "raw_score": 0.7,
+                    "title": "Raonsecure new report",
+                    "source_url": "https://example.test/raon.pdf",
+                },
+            ],
+        )
+        signal = session.scalars(
+            select(ResearchReportSignal).where(ResearchReportSignal.ticker == "005930")
+        ).one()
+        upsert_research_report_briefs(
+            session,
+            [
+                {
+                    "report_signal_id": signal.id,
+                    "ticker": "005930",
+                    "report_date": date(2026, 5, 15),
+                    "source": "hankyung_consensus",
+                    "broker": "Test",
+                    "title": "Samsung earnings recovery",
+                    "source_url": "https://example.test/report.pdf",
+                    "report_type": "earnings_review",
+                    "headline": "Memory recovery supports earnings.",
+                    "opinion": "positive",
+                    "stock_view": "Memory recovery supports the stock view.",
+                    "earnings": "Margins recover.",
+                    "industry": "AI demand improves.",
+                    "new_business": "",
+                    "valuation": "Target price rises.",
+                    "risks": "Demand volatility is the main risk.",
+                    "source_quality": "full_text",
+                    "brief_version": "brief-rule-v3",
+                    "confidence": 0.9,
+                }
+            ],
+        )
+
+    result = load_research_report_briefs(engine_factory=lambda _: engine)
+    freshness_html = _research_freshness_html(result.get("freshness", {}))
+
+    assert result["freshness"] == {
+        "latest_brief_date": "2026-05-15",
+        "latest_signal_date": "2026-05-18",
+        "missing_brief_count": 1,
+    }
+    assert "Latest brief" in freshness_html
+    assert "2026-05-15" in freshness_html
+    assert "Latest signal" in freshness_html
+    assert "2026-05-18" in freshness_html
+    assert "Missing briefs" in freshness_html
+    assert "1" in freshness_html
 
 
 def test_filter_research_report_briefs_supports_portfolio_opinion_source_and_query():

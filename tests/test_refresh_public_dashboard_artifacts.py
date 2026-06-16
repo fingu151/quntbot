@@ -52,6 +52,13 @@ def test_build_refresh_commands_runs_snapshot_then_ticker_briefs():
         [
             ".venv\\Scripts\\python.exe",
             "-m",
+            "scripts.backfill_research_report_briefs",
+            "--database-url",
+            "sqlite:///example.db",
+        ],
+        [
+            ".venv\\Scripts\\python.exe",
+            "-m",
             "scripts.generate_research_report_ticker_briefs",
             "--output",
             "data\\ticker.json",
@@ -145,7 +152,7 @@ def test_build_refresh_commands_skips_supplemental_when_disabled():
         include_supplemental=False,
     )
 
-    assert len(commands) == 7
+    assert len(commands) == 8
     assert "scripts.ingest_supplemental_research_reports" not in commands[0]
 
 
@@ -191,6 +198,7 @@ def test_build_refresh_commands_can_run_supplemental_discovery_then_rebuild_arti
         command[2] for command in commands if len(command) > 2 and command[1] == "-m"
     ]
     assert command_modules == [
+        "scripts.backfill_research_report_briefs",
         "scripts.generate_research_report_ticker_briefs",
         "scripts.export_research_quality_queue",
         "scripts.export_latest_report_followup_queue",
@@ -198,6 +206,7 @@ def test_build_refresh_commands_can_run_supplemental_discovery_then_rebuild_arti
         "scripts.discover_supplemental_research_sources",
         "scripts.verify_supplemental_research_sources",
         "scripts.ingest_supplemental_research_sources",
+        "scripts.backfill_research_report_briefs",
         "scripts.generate_research_report_ticker_briefs",
         "scripts.export_research_quality_queue",
         "scripts.export_latest_report_followup_queue",
@@ -209,7 +218,7 @@ def test_build_refresh_commands_can_run_supplemental_discovery_then_rebuild_arti
     assert action_queue_command[
         action_queue_command.index("--source-discovery") + 1
     ] == "data\\discovery.json"
-    assert commands[5] == [
+    assert commands[6] == [
         "python.exe",
         "-m",
         "scripts.discover_supplemental_research_sources",
@@ -224,7 +233,7 @@ def test_build_refresh_commands_can_run_supplemental_discovery_then_rebuild_arti
         "--max-urls-per-candidate",
         "8",
     ]
-    assert commands[7][-2:] == ["--database-url", "sqlite:///example.db"]
+    assert commands[8][-2:] == ["--database-url", "sqlite:///example.db"]
 
 
 def test_build_refresh_commands_converts_supplemental_table_before_ingest():
