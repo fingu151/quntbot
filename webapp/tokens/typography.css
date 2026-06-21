@@ -1,0 +1,41 @@
+/* ============================================================
+   quntbot — Typography tokens
+   나눔바른고딕 (NanumBarunGothic) everywhere. Generous line-height
+   for comfortable Korean reading; tabular figures for money.
+   ============================================================ */
+:root {
+  --font-sans: 'Nanum Barun Gothic', 'NanumBarunGothic', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo',
+               'Malgun Gothic', system-ui, sans-serif;
+  /* Numerals: same family, tabular figures for aligned tables */
+  --font-num: 'Nanum Barun Gothic', 'NanumBarunGothic', system-ui, sans-serif;
+  --num-feat: "tnum" 1;   /* @kind other */
+
+  /* ---- Type scale (px) ---- */
+  --fs-display:   34px;  /* hero balance */
+  --fs-h1:        28px;
+  --fs-h2:        22px;
+  --fs-h3:        18px;
+  --fs-title:     16px;  /* card titles, list primary */
+  --fs-body:      15px;
+  --fs-sm:        14px;
+  --fs-caption:   13px;
+  --fs-micro:     11px;  /* labels, chip text */
+
+  /* ---- Weights ---- */
+  --fw-regular:   400;  /* @kind other */
+  --fw-medium:    500;  /* @kind other */
+  --fw-semibold:  600;  /* @kind other */
+  --fw-bold:      700;  /* @kind other */
+  --fw-extrabold: 800;  /* @kind other */
+
+  /* ---- Line heights ---- */
+  --lh-tight:  1.2;   /* @kind other */
+  --lh-snug:   1.35;  /* @kind other */
+  --lh-normal: 1.5;   /* @kind other */
+  --lh-loose:  1.65;  /* @kind other */
+
+  /* ---- Letter spacing ---- */
+  --ls-tight:  -0.03em;   /* @kind other */
+  --ls-snug:   -0.015em;  /* @kind other */
+  --ls-normal: 0;         /* @kind other */
+}

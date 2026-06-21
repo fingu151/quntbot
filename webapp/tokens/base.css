@@ -1,0 +1,36 @@
+/* ============================================================
+   quntbot — Base resets & helpers (consumer-facing)
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-normal);
+  color: var(--text-body);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Korean: break only at spaces, never mid-word (자/산 → 자산) */
+  word-break: keep-all;
+  /* Use real font weights only — never browser-synthesized faux bold */
+  font-synthesis: none;
+}
+
+/* tabular figures for any money / data numerals */
+.num, .tnum {
+  font-family: var(--font-num);
+  font-feature-settings: var(--num-feat);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--ls-snug);
+}
+
+/* market direction text helpers */
+.up   { color: var(--up); }
+.down { color: var(--down); }
+.flat { color: var(--flat); }
+
+a { color: var(--action-primary); text-decoration: none; }
+
+::selection { background: var(--blue-100); color: var(--grey-900); }

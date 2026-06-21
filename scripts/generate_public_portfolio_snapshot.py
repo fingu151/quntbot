@@ -154,7 +154,9 @@ def build_snapshot(
     factor_map = factor_details or {}
     target_by_ticker = _target_map(dry_run_payload)
     order_by_ticker = _order_reason_map(dry_run_payload)
+    name_by_ticker = _target_name_map(dry_run_payload)
     executed_tickers = _executed_tickers(execution_payload)
+    price_by_ticker: dict[str, int] = {}
     warnings: list[str] = []
     positions = []
     total_market_value = 0
@@ -178,6 +180,7 @@ def build_snapshot(
         total_market_value += market_value
         total_cost += cost
         total_profit_loss += profit_loss
+        price_by_ticker[ticker] = current_price
 
         target = target_by_ticker.get(ticker, {})
         order_reason = order_by_ticker.get(ticker, "")
@@ -207,6 +210,13 @@ def build_snapshot(
             }
         )
 
+    orders = _build_orders(
+        dry_run_payload,
+        execution_payload,
+        executed_tickers,
+        name_by_ticker,
+        price_by_ticker,
+    )
     total_profit_loss_rate = (total_profit_loss / total_cost) * 100 if total_cost else 0.0
     cash = _cash_summary(account_payload)
     realized = _realized_summary(account_payload, execution_payload)
@@ -238,6 +248,7 @@ def build_snapshot(
         "realized": realized,
         "market": market or _empty_market(current_time),
         "positions": positions,
+        "orders": orders,
         "warnings": warnings,
     }
 
@@ -589,6 +600,49 @@ def _target_map(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for item in (payload.get("targets") or [])
         if item.get("ticker")
     }
+
+
+def _target_name_map(payload: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(item.get("ticker", "")): str(item.get("name", ""))
+        for item in (payload.get("targets") or [])
+        if item.get("ticker")
+    }
+
+
+def _build_orders(
+    dry_run: dict[str, Any],
+    execution: dict[str, Any],
+    executed_tickers: set[str],
+    name_by_ticker: dict[str, str],
+    price_by_ticker: dict[str, int],
+) -> list[dict[str, Any]]:
+    order_date = _date_from_execution(execution) or str(dry_run.get("as_of_date", ""))
+    orders: list[dict[str, Any]] = []
+    for item in dry_run.get("orders") or []:
+        ticker = str(item.get("ticker", ""))
+        if not ticker:
+            continue
+        orders.append(
+            {
+                "date": order_date,
+                "ticker": ticker,
+                "name": name_by_ticker.get(ticker, ""),
+                "side": str(item.get("side", "")).lower(),
+                "qty": _to_int(item.get("qty")),
+                "price": _to_int(price_by_ticker.get(ticker)),
+                "status": "filled" if ticker in executed_tickers else "planned",
+                "reason": str(item.get("reason", "")),
+            }
+        )
+    return orders
+
+
+def _date_from_execution(execution: dict[str, Any]) -> str:
+    value = execution.get("executed_at")
+    if not value:
+        return ""
+    return str(value)[:10].replace("-", ".")
 
 
 def _order_reason_map(payload: dict[str, Any]) -> dict[str, str]:

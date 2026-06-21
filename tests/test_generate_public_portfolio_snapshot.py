@@ -94,6 +94,16 @@ def test_build_snapshot_summarizes_holdings_and_merges_dry_run_rationale() -> No
     assert position["rationale"]["factor_scores"]["technical"] == 0.5
     assert position["rationale"]["factor_scores"]["auxiliary"] == 0.6
     assert position["rationale"]["factor_scores"]["investor_flow"] == 0.7
+    assert len(snapshot["orders"]) == 1
+    order = snapshot["orders"][0]
+    assert order["ticker"] == "005930"
+    assert order["name"] == "Samsung Electronics"
+    assert order["side"] == "buy"
+    assert order["qty"] == 10
+    assert order["price"] == 72000
+    assert order["status"] == "planned"
+    assert order["reason"] == "target allocation buy"
+    assert order["date"] == "2026-05-12"
 
 
 def test_fetch_live_market_snapshot_parses_yahoo_chart_responses() -> None:

@@ -1,0 +1,79 @@
+/* ============================================================
+   quntbot — Color tokens
+   Toss-inspired neutral grey scale + fintech accents.
+   Korean market convention: RED = 상승/이익 (up), BLUE = 하락/손실 (down)
+   ============================================================ */
+:root {
+  /* ---- Brand / Primary ---- */
+  --blue-50:  #e8f3ff;
+  --blue-100: #c9e2ff;
+  --blue-200: #90c2ff;
+  --blue-400: #4593fc;
+  --blue-500: #3182f6;  /* Toss Blue — primary action, links, 하락 */
+  --blue-600: #2272eb;
+  --blue-700: #1b64da;
+
+  /* ---- Up / Gain (Korean red) ---- */
+  --red-50:  #fdeced;
+  --red-100: #ffd4d6;
+  --red-400: #f86a73;
+  --red-500: #f04452;   /* 상승 / 매수 / 이익 */
+  --red-600: #e42939;
+
+  /* ---- Neutral grey scale (Toss greys) ---- */
+  --grey-0:   #ffffff;
+  --grey-50:  #f9fafb;
+  --grey-100: #f2f4f6;  /* app background */
+  --grey-200: #e5e8eb;  /* hairline borders */
+  --grey-300: #d1d6db;
+  --grey-400: #b0b8c1;
+  --grey-500: #8b95a1;  /* placeholder / disabled text */
+  --grey-600: #6b7684;  /* secondary text */
+  --grey-700: #4e5968;  /* body text */
+  --grey-800: #333d4b;  /* strong text */
+  --grey-900: #191f28;  /* headings / near-black */
+
+  /* ---- Semantic accents ---- */
+  --green-500: #15c47e;  /* positive system status, BUY tag */
+  --green-50:  #e7f9f1;
+  --amber-500: #ff9500;  /* caution / pending */
+  --amber-50:  #fff4e0;
+  --purple-500: #8b5cf6; /* research / AI overlay */
+  --purple-50: #f1ecfe;
+
+  /* ============================================================
+     Semantic aliases — reference these in components
+     ============================================================ */
+  /* surfaces */
+  --bg-app:        var(--grey-100);
+  --surface-card:  var(--grey-0);
+  --surface-sunken:var(--grey-50);
+  --surface-hover: var(--grey-100);
+
+  /* text */
+  --text-strong:   var(--grey-900);
+  --text-body:     var(--grey-700);
+  --text-secondary:var(--grey-600);
+  --text-tertiary: var(--grey-500);
+  --text-on-accent:var(--grey-0);
+
+  /* lines */
+  --border-subtle: var(--grey-200);
+  --border-strong: var(--grey-300);
+
+  /* interactive */
+  --action-primary:       var(--blue-500);
+  --action-primary-hover: var(--blue-600);
+  --action-primary-press: var(--blue-700);
+  --action-primary-soft:  var(--blue-50);
+
+  /* market direction */
+  --up:        var(--red-500);
+  --up-soft:   var(--red-50);
+  --down:      var(--blue-500);
+  --down-soft: var(--blue-50);
+  --flat:      var(--grey-500);
+
+  /* focus ring */
+  --focus-ring: rgba(49, 130, 246, 0.4);
+}
