@@ -1,0 +1,58 @@
+<!-- @dsCard group="Toss Invest" viewport="1320x860" name="quntbot 자산 대시보드" subtitle="자산·수익분석·거래·주문·배당·리포트 클릭 가능한 데스크톱 앱" -->
+<!-- @startingPoint section="Screens" subtitle="Toss-style quant trading dashboard (6 screens)" viewport="1320x860" -->
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>quntbot — 자산</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<script src="data.js"></script>
+<script src="snapshot.js"></script>
+<script type="text/babel" src="icons.jsx"></script>
+<script type="text/babel" src="AppShell.jsx"></script>
+<script type="text/babel" src="AssetScreen.jsx"></script>
+<script type="text/babel" src="AnalysisScreen.jsx"></script>
+<script type="text/babel" src="TransactionScreen.jsx"></script>
+<script type="text/babel" src="OrderScreen.jsx"></script>
+<script type="text/babel" src="DividendScreen.jsx"></script>
+<script type="text/babel" src="ReportScreen.jsx"></script>
+<style>html,body{margin:0;background:var(--bg-app)}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const TITLES = { asset:'자산', analysis:'수익분석', transactions:'거래내역', orders:'주문내역', dividends:'예상 배당금', reports:'리포트' };
+const SCREENS = {
+  asset: () => <window.AssetScreen/>,
+  analysis: () => <window.AnalysisScreen/>,
+  transactions: () => <window.TransactionScreen/>,
+  orders: () => <window.OrderScreen/>,
+  dividends: () => <window.DividendScreen/>,
+  reports: () => <window.ReportScreen/>,
+};
+function App(){
+  const [route, setRoute] = React.useState(localStorage.getItem('qb_route') || 'asset');
+  const nav = (k)=>{ setRoute(k); try{ localStorage.setItem('qb_route', k); }catch(e){} };
+  const Screen = SCREENS[route];
+  return (
+    <window.AppShell active={route} onNav={nav} title={TITLES[route]}>
+      <Screen/>
+    </window.AppShell>
+  );
+}
+function mount(){
+  if(!window.AppShell || !window.AssetScreen || !window.QB_DATA){ return setTimeout(mount, 40); }
+  // Wait for the live snapshot adapter (falls back to mock on its own) before first render.
+  Promise.resolve(window.QB_SNAPSHOT_READY).finally(()=>{
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  });
+}
+mount();
+</script>
+</body>
+</html>

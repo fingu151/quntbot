@@ -1,0 +1,33 @@
+/* ============================================================
+   quntbot — Webfonts
+   나눔바른고딕 (Nanum Barun Gothic) — Naver's clean, humanist
+   Korean sans. Explicit @font-face rules with REAL Light(300) /
+   Regular(400) / Bold(700) faces so bold money figures render
+   crisply (no faux-bold smearing) and the design-system compiler
+   can register the font.
+   Binaries: github.com/openhiun/hangul (served via jsDelivr).
+   ============================================================ */
+@font-face {
+  font-family: 'Nanum Barun Gothic';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/gh/openhiun/hangul/NanumBarunGothicLight.woff') format('woff'),
+       url('https://cdn.jsdelivr.net/gh/openhiun/hangul/NanumBarunGothicLight.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Nanum Barun Gothic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/gh/openhiun/hangul/NanumBarunGothic.woff') format('woff'),
+       url('https://cdn.jsdelivr.net/gh/openhiun/hangul/NanumBarunGothic.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Nanum Barun Gothic';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/gh/openhiun/hangul/NanumBarunGothicBold.woff') format('woff'),
+       url('https://cdn.jsdelivr.net/gh/openhiun/hangul/NanumBarunGothicBold.ttf') format('truetype');
+}
