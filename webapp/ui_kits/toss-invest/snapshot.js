@@ -84,11 +84,12 @@
     }));
   }
 
-  window.QB_DATA_SOURCE = 'mock';
-  window.QB_SNAPSHOT_READY = (async function () {
-    const snap = await fetchFirst();
+  // Map a fetched snapshot onto window.QB_DATA. Returns true if applied,
+  // false if the snapshot was empty/unusable (mock is kept). Safe to call
+  // repeatedly — the app's poller calls it again when generated_at changes.
+  function applySnapshot(snap) {
     if (!snap || !Array.isArray(snap.positions) || snap.positions.length === 0) {
-      return; // keep mock
+      return false; // keep mock
     }
     const D = window.QB_DATA;
     const s = snap.summary || {};
@@ -158,5 +159,15 @@
       console.warn('[quntbot] snapshot warnings:', snap.warnings);
     }
     console.info('[quntbot] live snapshot loaded:', positions.length, 'positions @', window.QB_SNAPSHOT_GENERATED_AT);
+    return true;
+  }
+
+  // Exposed for the app's auto-refresh poller (see index.html).
+  window.QB_fetchSnapshot = fetchFirst;
+  window.QB_applySnapshot = applySnapshot;
+
+  window.QB_DATA_SOURCE = 'mock';
+  window.QB_SNAPSHOT_READY = (async function () {
+    applySnapshot(await fetchFirst());
   })();
 })();

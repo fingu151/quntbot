@@ -30,7 +30,8 @@ python -m scripts.generate_public_portfolio_snapshot          # 1회 생성
 powershell scripts/refresh_public_portfolio_snapshot.ps1
 ```
 
-→ 새로고침하면 화면이 최신 스냅샷을 다시 읽습니다.
+→ 화면은 **60초마다 스냅샷을 자동 확인**해, `generated_at`이 바뀌면(=새 리밸런싱) 수동 새로고침
+없이 자동으로 다시 그립니다. (즉시 보려면 F5도 가능)
 
 ### 스냅샷이 채우는 화면 / 아직 mock인 화면
 
