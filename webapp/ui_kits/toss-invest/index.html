@@ -49,7 +49,23 @@ function mount(){
   if(!window.AppShell || !window.AssetScreen || !window.QB_DATA){ return setTimeout(mount, 40); }
   // Wait for the live snapshot adapter (falls back to mock on its own) before first render.
   Promise.resolve(window.QB_SNAPSHOT_READY).finally(()=>{
-    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    const rerender = ()=> root.render(<App/>);
+    rerender();
+    // Auto-refresh: poll the snapshot so a new rebalance (매수/매도) appears
+    // without a manual page reload. Re-renders only when generated_at changes.
+    const POLL_MS = 60000;
+    setInterval(async ()=>{
+      try{
+        const snap = await window.QB_fetchSnapshot();
+        if(snap && snap.generated_at && snap.generated_at !== window.QB_SNAPSHOT_GENERATED_AT){
+          if(window.QB_applySnapshot(snap)){
+            rerender();
+            console.info('[quntbot] snapshot auto-refreshed @', snap.generated_at);
+          }
+        }
+      }catch(e){}
+    }, POLL_MS);
   });
 }
 mount();
