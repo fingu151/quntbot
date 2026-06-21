@@ -19,7 +19,14 @@ if str(ROOT_DIR) not in sys.path:
 
 from config import DATA_DIR, DATABASE_URL, REBALANCE
 from src.data.database import get_engine, session_scope
-from src.data.models import BusanstockSignal, InvestorFlow, QualityMetric
+from src.data.models import (
+    BusanstockSignal,
+    InvestorFlow,
+    QualityMetric,
+    ResearchReportAnalysis,
+    ResearchReportSignal,
+    Stock,
+)
 from src.factors.engine import calculate_factor_scores
 
 
@@ -98,6 +105,7 @@ def run(
     signal_details = load_signal_details(args.database_url, tickers, signal_date)
     market_context = load_market_context(args.database_url, tickers, signal_date)
     factor_details = load_factor_details(args.database_url, tickers, signal_date)
+    research_reports = load_research_reports(args.database_url)
     try:
         market = (market_provider or fetch_live_market_snapshot)()
     except Exception as exc:
@@ -117,6 +125,7 @@ def run(
         signal_details=signal_details,
         market_context=market_context,
         factor_details=factor_details,
+        research_reports=research_reports,
     )
     snapshot["source"]["holdings"] = holdings_source
     snapshot["source"]["kis_called_by_snapshot"] = kis_called_by_snapshot
@@ -143,6 +152,7 @@ def build_snapshot(
     signal_details: dict[str, list[dict[str, Any]]] | None = None,
     market_context: dict[str, dict[str, Any]] | None = None,
     factor_details: dict[str, dict[str, float]] | None = None,
+    research_reports: list[dict[str, Any]] | None = None,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     current_time = (generated_at or datetime.now(KST)).astimezone(KST)
@@ -217,6 +227,11 @@ def build_snapshot(
         name_by_ticker,
         price_by_ticker,
     )
+    held_tickers = {position["ticker"] for position in positions}
+    reports = [
+        {**report, "held": str(report.get("ticker", "")) in held_tickers}
+        for report in (research_reports or [])
+    ]
     total_profit_loss_rate = (total_profit_loss / total_cost) * 100 if total_cost else 0.0
     cash = _cash_summary(account_payload)
     realized = _realized_summary(account_payload, execution_payload)
@@ -249,6 +264,7 @@ def build_snapshot(
         "market": market or _empty_market(current_time),
         "positions": positions,
         "orders": orders,
+        "reports": reports,
         "warnings": warnings,
     }
 
@@ -579,6 +595,62 @@ def load_factor_details(
             "research_report": score.research_report_score,
         }
     return result
+
+
+def load_research_reports(
+    database_url: str | None,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    """Recent broker research cards for the 리포트 screen. Best-effort: any
+    DB problem yields an empty list so the snapshot still builds (the webapp
+    then keeps its bundled mock reports)."""
+    try:
+        engine = get_engine(database_url)
+        with session_scope(engine) as session:
+            analyses = session.scalars(
+                select(ResearchReportAnalysis)
+                .order_by(desc(ResearchReportAnalysis.report_date))
+                .limit(limit)
+            ).all()
+            if not analyses:
+                return []
+            tickers = {row.ticker for row in analyses}
+            name_by_ticker = {
+                ticker: name
+                for ticker, name in session.execute(
+                    select(Stock.ticker, Stock.name).where(Stock.ticker.in_(tickers))
+                ).all()
+            }
+            target_by_key: dict[tuple[str, date], float] = {}
+            for signal in session.scalars(
+                select(ResearchReportSignal).where(
+                    ResearchReportSignal.ticker.in_(tickers)
+                )
+            ).all():
+                if signal.target_price is not None:
+                    target_by_key[(signal.ticker, signal.report_date)] = float(
+                        signal.target_price
+                    )
+    except Exception:
+        return []
+
+    reports: list[dict[str, Any]] = []
+    for row in analyses:
+        reports.append(
+            {
+                "date": str(row.report_date).replace("-", "."),
+                "ticker": row.ticker,
+                "name": name_by_ticker.get(row.ticker, row.ticker),
+                "broker": row.broker or "",
+                "opinion": row.investment_opinion,
+                "confidence": _to_float(row.confidence),
+                "target": target_by_key.get((row.ticker, row.report_date)),
+                "title": row.title,
+                "thesis": row.buy_thesis or "",
+                "risk": row.risk_factors or row.sell_or_risk_thesis or "",
+            }
+        )
+    return reports
 
 
 def _load_kis_holdings() -> list[dict[str, Any]]:

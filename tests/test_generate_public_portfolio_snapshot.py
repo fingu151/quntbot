@@ -71,6 +71,19 @@ def test_build_snapshot_summarizes_holdings_and_merges_dry_run_rationale() -> No
             "kosdaq": {"value": 900.2, "chg_pct": -0.1},
             "usdkrw": {"value": 1365.4, "chg_pct": 0.2},
         },
+        research_reports=[
+            {
+                "date": "2026.05.12", "ticker": "005930", "name": "Samsung Electronics",
+                "broker": "한경컨센서스", "opinion": "positive", "confidence": 1.0,
+                "target": 95000, "title": "메모리 사이클 반등", "thesis": "HBM 수요 견조",
+                "risk": "중국 수요 둔화",
+            },
+            {
+                "date": "2026.05.11", "ticker": "000660", "name": "SK Hynix",
+                "broker": "미래에셋", "opinion": "mixed", "confidence": 0.9,
+                "target": None, "title": "관망", "thesis": "", "risk": "변동성",
+            },
+        ],
         generated_at=datetime(2026, 5, 12, 9, 15, tzinfo=KST),
     )
 
@@ -104,6 +117,15 @@ def test_build_snapshot_summarizes_holdings_and_merges_dry_run_rationale() -> No
     assert order["status"] == "planned"
     assert order["reason"] == "target allocation buy"
     assert order["date"] == "2026-05-12"
+    assert len(snapshot["reports"]) == 2
+    held_report = snapshot["reports"][0]
+    assert held_report["ticker"] == "005930"
+    assert held_report["opinion"] == "positive"
+    assert held_report["target"] == 95000
+    assert held_report["held"] is True
+    assert snapshot["reports"][1]["ticker"] == "000660"
+    assert snapshot["reports"][1]["held"] is False
+    assert snapshot["reports"][1]["target"] is None
 
 
 def test_fetch_live_market_snapshot_parses_yahoo_chart_responses() -> None:

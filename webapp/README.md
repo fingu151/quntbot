@@ -36,15 +36,17 @@ powershell scripts/refresh_public_portfolio_snapshot.ps1
 
 | 데이터 | 출처 |
 |---|---|
-| 자산(보유종목·평가금액·손익·팩터·랭크·체결), **주문내역(매수/매도)**, 시장지수, 수익분석 팩터배분 | **스냅샷(실데이터)** |
-| 거래내역 · 예상 배당금 · 리포트 · 섹터비중 · 평가금액 추이 | 아직 mock |
+| 자산(보유종목·평가금액·손익·팩터·랭크·체결), **주문내역(매수/매도)**, **리포트(리서치)**, 시장지수, 수익분석 팩터배분 | **스냅샷(실데이터)** |
+| 거래내역 · 예상 배당금 · 섹터비중 · 평가금액 추이 | 아직 mock |
 
-> 주문내역은 스냅샷의 `orders` 섹션(dry-run 주문 + 실행리포트 체결상태)에서 옵니다 —
-> `scripts/generate_public_portfolio_snapshot.py` 가 생성.
+> 주문내역은 스냅샷의 `orders` 섹션(dry-run 주문 + 실행리포트 체결상태),
+> 리포트는 `reports` 섹션(`research_report_analyses` DB + 종목명/목표가)에서 옵니다 —
+> 모두 `scripts/generate_public_portfolio_snapshot.py` 가 생성.
+> (DB가 없거나 리포트가 없으면 `reports`는 빈 배열이 되고, webapp은 mock 리포트로 폴백합니다.)
+>
 > 아직 mock인 항목의 정직한 사정:
 > - **거래내역**: 체결 단가가 trade journal(CSV/DB)에만 있어 정적 JSON 소스 없음.
 > - **예상 배당금**: 엔진에 배당 예측 산출물이 없음(배당수익률은 팩터 입력일 뿐).
-> - **리포트**: 리서치 브리핑이 DB 기반. 스냅샷 생성기에 섹션을 추가하면 같은 방식으로 연동 가능.
 
 ## 구성
 

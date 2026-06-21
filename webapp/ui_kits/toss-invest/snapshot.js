@@ -136,6 +136,22 @@
       }));
     }
 
+    if (Array.isArray(snap.reports) && snap.reports.length) {
+      D.reports = snap.reports.map((r) => ({
+        date: String(r.date || '').replace(/-/g, '.'),
+        name: r.name || r.ticker || '',
+        ticker: String(r.ticker || ''),
+        broker: r.broker || '',
+        opinion: r.opinion || 'mixed',
+        confidence: r.confidence != null ? r.confidence : 1,
+        target: r.target || null,
+        title: r.title || '',
+        thesis: r.thesis || '',
+        risk: r.risk || '',
+        held: !!r.held,
+      }));
+    }
+
     window.QB_DATA_SOURCE = 'snapshot';
     window.QB_SNAPSHOT_GENERATED_AT = snap.generated_at || '';
     if (Array.isArray(snap.warnings) && snap.warnings.length) {
